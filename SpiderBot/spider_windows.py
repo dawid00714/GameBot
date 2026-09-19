@@ -54,13 +54,8 @@ def _client_geometry(hwnd: int) -> WindowInfo:
         raise WindowAutomationError(f"Fenster {hwnd} existiert nicht mehr.")
     title = win32gui.GetWindowText(hwnd)
     left_top = win32gui.ClientToScreen(hwnd, (0, 0))
-    right_bottom = win32gui.ClientToScreen(
-        hwnd,
-        (
-            max(0, win32gui.GetClientRect(hwnd)[2]),
-            max(0, win32gui.GetClientRect(hwnd)[3]),
-        ),
-    )
+    rect = win32gui.GetClientRect(hwnd)
+    right_bottom = win32gui.ClientToScreen(hwnd, (max(0, rect[2]), max(0, rect[3])))
     left, top = left_top
     right, bottom = right_bottom
     return WindowInfo(
@@ -88,7 +83,6 @@ def list_windows(title_contains: str | None = None) -> list[WindowInfo]:
             if needle and needle not in title.lower():
                 return True
             info = _client_geometry(hwnd)
-            # Ignore tiny utility windows.
             if info.width >= 300 and info.height >= 200:
                 result.append(info)
         except Exception:
@@ -101,18 +95,24 @@ def list_windows(title_contains: str | None = None) -> list[WindowInfo]:
 
 
 class WindowController:
-    """Capture and control one Windows game window.
+    """Capture and control one Windows window without touching the real mouse.
 
-    The default input method sends mouse messages directly to the selected HWND.
-    This is a *virtual/background mouse*: it does not move the user's physical
-    pointer. Some games deliberately ignore posted mouse messages. In that case
-    the UI reports that the action was not observed rather than silently taking
-    over the real pointer.
+    HARD GUARANTEE FOR INPUT:
+    - no SetCursorPos
+    - no mouse_event / SendInput
+    - no SetForegroundWindow / BringWindowToTop
+    - no activation of the selected game window
+
+    Input is delivered only as WM_MOUSE* messages to the selected HWND or the
+    most specific child HWND that covers the drag path. If the game refuses
+    background window messages, the action fails visibly instead of stealing
+    the user's physical mouse.
     """
 
     def __init__(self, hwnd: int):
         _require_windows()
         self.hwnd = int(hwnd)
+        self.last_input_target: dict[str, Any] | None = None
 
     @property
     def info(self) -> WindowInfo:
@@ -122,10 +122,14 @@ class WindowController:
         return bool(win32gui.IsIconic(self.hwnd))
 
     def _capture_printwindow(self) -> np.ndarray | None:
-        """Try to render the selected HWND independently of screen occlusion."""
+        """Try to render the HWND independently of screen occlusion/focus."""
         if win32ui is None:
             return None
 
+        hwnd_dc = None
+        src_dc = None
+        mem_dc = None
+        bitmap = None
         try:
             wl, wt, wr, wb = win32gui.GetWindowRect(self.hwnd)
             full_w = max(1, wr - wl)
@@ -142,24 +146,16 @@ class WindowController:
             bitmap.CreateCompatibleBitmap(src_dc, full_w, full_h)
             mem_dc.SelectObject(bitmap)
 
-            # PW_RENDERFULLCONTENT = 2. It works for many DWM/WinUI windows and
-            # lets the browser control panel overlap the game without poisoning
-            # the agent's screenshot.
             rendered = ctypes.windll.user32.PrintWindow(
                 self.hwnd,
                 mem_dc.GetSafeHdc(),
-                2,
+                2,  # PW_RENDERFULLCONTENT
             )
 
             bits = bitmap.GetBitmapBits(True)
             frame = np.frombuffer(bits, dtype=np.uint8)
             frame.shape = (full_h, full_w, 4)
             frame = frame[:, :, :3].copy()
-
-            mem_dc.DeleteDC()
-            src_dc.DeleteDC()
-            win32gui.ReleaseDC(self.hwnd, hwnd_dc)
-            win32gui.DeleteObject(bitmap.GetHandle())
 
             crop = frame[
                 oy:min(full_h, oy + info.height),
@@ -174,21 +170,40 @@ class WindowController:
                 return crop
         except Exception:
             return None
+        finally:
+            try:
+                if mem_dc is not None:
+                    mem_dc.DeleteDC()
+            except Exception:
+                pass
+            try:
+                if src_dc is not None:
+                    src_dc.DeleteDC()
+            except Exception:
+                pass
+            try:
+                if hwnd_dc is not None:
+                    win32gui.ReleaseDC(self.hwnd, hwnd_dc)
+            except Exception:
+                pass
+            try:
+                if bitmap is not None:
+                    win32gui.DeleteObject(bitmap.GetHandle())
+            except Exception:
+                pass
         return None
 
     def capture(self) -> np.ndarray:
-        # First try PrintWindow so the agent has its own visual workspace even
-        # when another window overlaps the Solitaire window.
         frame = self._capture_printwindow()
         if frame is not None:
             return frame
 
-        # DirectX apps sometimes refuse PrintWindow. Fall back to real screen
-        # capture; this requires the game to be visible and not covered.
+        # DirectX/WinUI can refuse PrintWindow. Screen capture is then the only
+        # read-only fallback; it still does NOT move or activate the game.
         if self.is_minimized():
             raise WindowAutomationError(
                 "Das Spiel ist minimiert und unterstützt PrintWindow nicht. "
-                "Bitte wiederherstellen."
+                "Für die Bilderkennung muss es sichtbar sein."
             )
 
         info = self.info
@@ -211,164 +226,136 @@ class WindowController:
         return frame[:, :, :3].copy()
 
     @staticmethod
-    def _lparam(x: int, y: int) -> int:
+    def _contains(rect: tuple[int, int, int, int], p: tuple[int, int]) -> bool:
+        l, t, r, b = rect
+        return l <= p[0] < r and t <= p[1] < b
+
+    def _background_target(
+        self,
+        start_client: tuple[float, float],
+        end_client: tuple[float, float] | None = None,
+    ) -> int:
+        """Pick the smallest child HWND covering the whole input path."""
+        sx, sy = int(round(start_client[0])), int(round(start_client[1]))
+        start_screen = win32gui.ClientToScreen(self.hwnd, (sx, sy))
+        if end_client is None:
+            end_screen = start_screen
+        else:
+            ex, ey = int(round(end_client[0])), int(round(end_client[1]))
+            end_screen = win32gui.ClientToScreen(self.hwnd, (ex, ey))
+
+        candidates: list[tuple[int, int]] = []
+
+        def consider(hwnd: int) -> None:
+            try:
+                if not win32gui.IsWindowVisible(hwnd) or not win32gui.IsWindowEnabled(hwnd):
+                    return
+                rect = win32gui.GetWindowRect(hwnd)
+                if not self._contains(rect, start_screen) or not self._contains(rect, end_screen):
+                    return
+                l, t, r, b = rect
+                area = max(1, (r - l) * (b - t))
+                candidates.append((area, hwnd))
+            except Exception:
+                return
+
+        consider(self.hwnd)
+
+        try:
+            win32gui.EnumChildWindows(self.hwnd, lambda child, _extra: (consider(child), True)[1], None)
+        except Exception:
+            pass
+
+        target = min(candidates, key=lambda item: item[0])[1] if candidates else self.hwnd
+        try:
+            cls = win32gui.GetClassName(target)
+        except Exception:
+            cls = ""
+        try:
+            title = win32gui.GetWindowText(target)
+        except Exception:
+            title = ""
+        self.last_input_target = {
+            "hwnd": int(target),
+            "class": cls,
+            "title": title,
+        }
+        return target
+
+    @staticmethod
+    def _lparam_for_target(target: int, screen_point: tuple[int, int]) -> int:
+        x, y = win32gui.ScreenToClient(target, screen_point)
         return win32api.MAKELONG(int(x), int(y))
 
-    def virtual_click(self, x: float, y: float, hold_ms: int = 55) -> None:
-        x_i, y_i = int(round(x)), int(round(y))
-        lp = self._lparam(x_i, y_i)
-        win32gui.PostMessage(self.hwnd, win32con.WM_MOUSEMOVE, 0, lp)
-        win32gui.PostMessage(self.hwnd, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, lp)
-        time.sleep(max(0.01, hold_ms / 1000.0))
-        win32gui.PostMessage(self.hwnd, win32con.WM_LBUTTONUP, 0, lp)
-
-
-    def _bring_to_front(self) -> int | None:
-        """Restore and foreground the game window for real SendInput-style mouse input."""
-        old_fg = None
-        try:
-            old_fg = win32gui.GetForegroundWindow()
-        except Exception:
-            pass
-
-        try:
-            if win32gui.IsIconic(self.hwnd):
-                win32gui.ShowWindow(self.hwnd, win32con.SW_RESTORE)
-                time.sleep(0.12)
-            win32gui.BringWindowToTop(self.hwnd)
-            win32gui.SetForegroundWindow(self.hwnd)
-            time.sleep(0.10)
-        except Exception:
-            # SetForegroundWindow is subject to Windows focus rules. The
-            # subsequent cursor/mouse_event input can still work if the game
-            # is already visible.
-            pass
-        return old_fg
-
-    def system_click(self, x: float, y: float, hold_ms: int = 70) -> None:
-        """Reliable foreground click using the Windows system cursor.
-
-        The current cursor position and foreground window are restored
-        immediately afterwards.
-        """
-        info = self.info
-        sx = info.left + int(round(x))
-        sy = info.top + int(round(y))
-        old_pos = win32api.GetCursorPos()
-        old_fg = self._bring_to_front()
-        try:
-            win32api.SetCursorPos((sx, sy))
-            time.sleep(0.04)
-            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-            time.sleep(max(0.02, hold_ms / 1000.0))
-            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-        finally:
-            try:
-                win32api.SetCursorPos(old_pos)
-            except Exception:
-                pass
-            if old_fg and old_fg != self.hwnd:
-                try:
-                    win32gui.SetForegroundWindow(old_fg)
-                except Exception:
-                    pass
-
-    def system_drag(
+    def _post_mouse(
         self,
-        start: tuple[float, float],
-        end: tuple[float, float],
-        duration_ms: int = 520,
-        steps: int = 30,
+        target: int,
+        msg: int,
+        wparam: int,
+        screen_point: tuple[int, int],
     ) -> None:
-        """Reliable foreground drag: left button down, move held, release.
+        lp = self._lparam_for_target(target, screen_point)
+        if not win32gui.PostMessage(target, msg, wparam, lp):
+            raise WindowAutomationError(
+                f"WM_MOUSE-Nachricht {msg} konnte nicht an HWND {target} gesendet werden."
+            )
 
-        This is the fallback for games (including some Microsoft Store games)
-        that ignore background WM_MOUSE messages. The user's cursor position is
-        saved and restored after the drag.
-        """
-        info = self.info
-        sx = info.left + int(round(start[0]))
-        sy = info.top + int(round(start[1]))
-        ex = info.left + int(round(end[0]))
-        ey = info.top + int(round(end[1]))
+    def virtual_click(self, x: float, y: float, hold_ms: int = 70) -> None:
+        point_client = (float(x), float(y))
+        target = self._background_target(point_client)
+        screen = win32gui.ClientToScreen(self.hwnd, (int(round(x)), int(round(y))))
 
-        old_pos = win32api.GetCursorPos()
-        old_fg = self._bring_to_front()
-        steps = max(6, int(steps))
-        delay = max(0.004, duration_ms / 1000.0 / steps)
-
-        try:
-            win32api.SetCursorPos((sx, sy))
-            time.sleep(0.05)
-            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-            time.sleep(delay)
-
-            for i in range(1, steps + 1):
-                t = i / steps
-                u = t * t * (3.0 - 2.0 * t)
-                x = int(round(sx + (ex - sx) * u))
-                y = int(round(sy + (ey - sy) * u))
-                win32api.SetCursorPos((x, y))
-                time.sleep(delay)
-
-            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-            time.sleep(0.04)
-        finally:
-            # Ensure the button is never left logically pressed after an error.
-            try:
-                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-            except Exception:
-                pass
-            try:
-                win32api.SetCursorPos(old_pos)
-            except Exception:
-                pass
-            if old_fg and old_fg != self.hwnd:
-                try:
-                    win32gui.SetForegroundWindow(old_fg)
-                except Exception:
-                    pass
+        self._post_mouse(target, win32con.WM_MOUSEMOVE, 0, screen)
+        self._post_mouse(target, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, screen)
+        time.sleep(max(0.02, hold_ms / 1000.0))
+        self._post_mouse(target, win32con.WM_LBUTTONUP, 0, screen)
 
     def virtual_drag(
         self,
         start: tuple[float, float],
         end: tuple[float, float],
-        duration_ms: int = 380,
-        steps: int = 24,
+        duration_ms: int = 520,
+        steps: int = 34,
     ) -> None:
-        """Press left mouse, keep it held while moving, release at destination."""
+        """Background-only drag: down -> held moves -> up, no physical cursor."""
+        target = self._background_target(start, end)
         sx, sy = start
         ex, ey = end
-        steps = max(4, int(steps))
-        delay = max(0.002, duration_ms / 1000.0 / steps)
+        steps = max(8, int(steps))
+        delay = max(0.003, duration_ms / 1000.0 / steps)
 
-        start_lp = self._lparam(int(round(sx)), int(round(sy)))
-        win32gui.PostMessage(self.hwnd, win32con.WM_MOUSEMOVE, 0, start_lp)
-        win32gui.PostMessage(
+        start_screen = win32gui.ClientToScreen(
             self.hwnd,
+            (int(round(sx)), int(round(sy))),
+        )
+        self._post_mouse(target, win32con.WM_MOUSEMOVE, 0, start_screen)
+        self._post_mouse(
+            target,
             win32con.WM_LBUTTONDOWN,
             win32con.MK_LBUTTON,
-            start_lp,
+            start_screen,
         )
         time.sleep(delay)
 
         for i in range(1, steps + 1):
             t = i / steps
-            # Smoothstep makes the drag more similar to a human pointer motion.
             u = t * t * (3.0 - 2.0 * t)
-            x = sx + (ex - sx) * u
-            y = sy + (ey - sy) * u
-            lp = self._lparam(int(round(x)), int(round(y)))
-            win32gui.PostMessage(
-                self.hwnd,
+            x = int(round(sx + (ex - sx) * u))
+            y = int(round(sy + (ey - sy) * u))
+            screen = win32gui.ClientToScreen(self.hwnd, (x, y))
+            self._post_mouse(
+                target,
                 win32con.WM_MOUSEMOVE,
                 win32con.MK_LBUTTON,
-                lp,
+                screen,
             )
             time.sleep(delay)
 
-        end_lp = self._lparam(int(round(ex)), int(round(ey)))
-        win32gui.PostMessage(self.hwnd, win32con.WM_LBUTTONUP, 0, end_lp)
+        end_screen = win32gui.ClientToScreen(
+            self.hwnd,
+            (int(round(ex)), int(round(ey))),
+        )
+        self._post_mouse(target, win32con.WM_LBUTTONUP, 0, end_screen)
 
     def normalized_to_client(self, nx: float, ny: float) -> tuple[int, int]:
         info = self.info
@@ -376,12 +363,17 @@ class WindowController:
         ny = min(1.0, max(0.0, float(ny)))
         return int(nx * info.width), int(ny * info.height)
 
-    def click_normalized(self, nx: float, ny: float, mode: str = "background") -> None:
+    def click_normalized(self, nx: float, ny: float) -> None:
         x, y = self.normalized_to_client(nx, ny)
-        if mode == "system":
-            self.system_click(x, y)
-        else:
-            self.virtual_click(x, y)
+        self.virtual_click(x, y)
+
+    def input_status(self) -> dict[str, Any]:
+        return {
+            "mode": "background_only",
+            "physical_mouse_touched": False,
+            "foreground_changed": False,
+            "target": self.last_input_target,
+        }
 
 
 def frame_difference(before: np.ndarray, after: np.ndarray) -> float:
@@ -389,5 +381,4 @@ def frame_difference(before: np.ndarray, after: np.ndarray) -> float:
         return 1.0
     a = before.astype(np.int16)
     b = after.astype(np.int16)
-    # Mean absolute difference normalized to 0..1.
     return float(np.abs(a - b).mean() / 255.0)
