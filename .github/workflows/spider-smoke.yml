@@ -16,7 +16,7 @@ jobs:
       - name: Compile Spider agent modules
         shell: pwsh
         run: |
-          python -m py_compile SpiderBot/spider_windows.py SpiderBot/spider_state.py SpiderBot/spider_solver.py SpiderBot/spider_learning.py SpiderBot/spider_models.py SpiderBot/spider_ollama.py SpiderBot/spider_agent.py SpiderBot/spider_app.py
+          python -m py_compile SpiderBot/vm_guest_input.py SpiderBot/spider_windows.py SpiderBot/spider_state.py SpiderBot/spider_solver.py SpiderBot/spider_learning.py SpiderBot/spider_models.py SpiderBot/spider_ollama.py SpiderBot/spider_agent.py SpiderBot/spider_app.py
       - name: Check embedded browser JavaScript
         shell: pwsh
         run: |
