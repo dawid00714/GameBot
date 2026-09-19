@@ -13,15 +13,18 @@ import spider_ollama
 from spider_agent import SpiderAgent, SpiderAgentError
 from spider_windows import WindowAutomationError, list_windows
 
-app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="3.7.0")
+app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="3.8.0")
 agent = SpiderAgent()
-agent_lock = threading.Lock()
+agent_lock = threading.RLock()
+step_lock = threading.Lock()
 run_stop = threading.Event()
 run_thread: threading.Thread | None = None
 runtime = {
     "running": False,
+    "stopping": False,
     "last_loop_error": None,
     "steps": 0,
+    "started_at": None,
 }
 
 
@@ -62,23 +65,27 @@ _auto_select_solitaire()
 
 
 def _runner() -> None:
-    runtime["running"] = True
-    runtime["last_loop_error"] = None
     try:
         while not run_stop.is_set():
             try:
-                with agent_lock:
+                with step_lock:
                     agent.step()
-                    runtime["steps"] += 1
-                    if agent.game_finished:
-                        break
+                runtime["steps"] += 1
+                if agent.game_finished:
+                    break
             except Exception as exc:
                 runtime["last_loop_error"] = f"{type(exc).__name__}: {exc}"
+                try:
+                    agent._set_phase("error", runtime["last_loop_error"])
+                except Exception:
+                    pass
                 break
-            # The actual action wait happens in the agent; this only yields to UI.
+            # The expensive work happens in agent.step(); this tiny pause only
+            # yields CPU to the web UI.
             time.sleep(0.08)
     finally:
         runtime["running"] = False
+        runtime["stopping"] = False
 
 
 def _start_runner() -> None:
@@ -87,18 +94,24 @@ def _start_runner() -> None:
         return
     run_stop.clear()
     runtime["last_loop_error"] = None
+    runtime["stopping"] = False
+    runtime["running"] = True
+    runtime["started_at"] = time.time()
     run_thread = threading.Thread(target=_runner, name="spider-agent-runner", daemon=True)
     run_thread.start()
 
 
 def _stop_runner() -> None:
     run_stop.set()
-    runtime["running"] = False
+    if runtime["running"]:
+        runtime["stopping"] = True
 
 
 def _status() -> dict[str, Any]:
-    with agent_lock:
-        data = agent.status()
+    # IMPORTANT: never wait for the long-running move lock here. Status polling
+    # must stay responsive while OCR, Ollama, TypeSafe or input verification is
+    # running.
+    data = agent.status()
     data["runtime"] = dict(runtime)
     return data
 
@@ -110,7 +123,7 @@ def index():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "version": "3.7.0", "windows_agent": True}
+    return {"ok": True, "version": "3.8.0", "windows_agent": True}
 
 
 @app.get("/api/ollama/models")
@@ -199,26 +212,35 @@ def retry_laya():
 
 @app.post("/api/observe")
 def observe():
+    if runtime["running"]:
+        raise HTTPException(status_code=409, detail="Agent läuft bereits automatisch.")
+    if not step_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="Eine Analyse/Aktion läuft bereits.")
     try:
-        with agent_lock:
-            agent.observe()
-            return agent.status()
+        agent.observe(use_vision=True)
+        return agent.status()
     except Exception as exc:
         raise HTTPException(status_code=409, detail=f"{type(exc).__name__}: {exc}")
+    finally:
+        step_lock.release()
 
 
 @app.post("/api/step")
 def step():
     if runtime["running"]:
         raise HTTPException(status_code=409, detail="Agent läuft bereits automatisch.")
+    if not step_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="Eine Analyse/Aktion läuft bereits.")
     try:
-        with agent_lock:
-            agent.step()
-            runtime["steps"] += 1
-            return agent.status()
+        agent.step()
+        runtime["steps"] += 1
+        runtime["last_loop_error"] = None
+        return agent.status()
     except Exception as exc:
         runtime["last_loop_error"] = f"{type(exc).__name__}: {exc}"
         raise HTTPException(status_code=409, detail=runtime["last_loop_error"])
+    finally:
+        step_lock.release()
 
 
 @app.post("/api/run/start")
@@ -276,8 +298,7 @@ def status():
 @app.get("/api/frame.jpg")
 def frame():
     try:
-        with agent_lock:
-            data = agent.frame_jpeg()
+        data = agent.frame_jpeg()
         return Response(
             content=data,
             media_type="image/jpeg",
@@ -318,7 +339,7 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
     <h1><span class="pink">Laya</span> / <span class="cyan">TypeSafe Jev</span> · Windows Spider Agent</h1>
     <div class="muted">Nur Hintergrund-Eingabe · echte Maus bleibt unberührt · kein Fokuswechsel · Live-Screenshot</div>
   </div>
-  <div class="small muted">Build 3.7</div>
+  <div class="small muted">Build 3.8</div>
 </header>
 
 <main>
@@ -602,7 +623,10 @@ async function refreshStatus(){
     }else if(d.game_won){
       $('mainStatus').textContent='Gewonnen.';
     }else if(d.runtime.running){
-      $('mainStatus').textContent='Agent spielt · Aktion '+(d.moves+1);
+      const phase=d.phase_detail||d.phase||'arbeitet';
+      const elapsed=Number(d.phase_elapsed_seconds||0).toFixed(1);
+      $('mainStatus').textContent=(d.runtime.stopping?'Stop angefordert · ':'Agent spielt · ')+
+        phase+' · '+elapsed+' s · Aktion '+(d.moves+1);
     }else{
       $('mainStatus').textContent=d.window?'Fenster verbunden · '+d.moves+' Aktionen ausgeführt':'Noch kein Spielfenster ausgewählt.';
     }
