@@ -28,7 +28,7 @@ class SpiderConfig:
     learning: bool = True
     action_delay: float = 0.85
     input_mode: str = "background"
-    vision_enabled: bool = False
+    vision_enabled: bool = True
     vision_model: str = ""
 
 
@@ -166,11 +166,12 @@ class SpiderAgent:
                     visible_cards = sum(len(c.cards) for c in state.columns)
                     applied = len(self.last_vision.get("applied_columns") or [])
                     confidence = float(self.last_vision.get("confidence") or 0.0)
+                    raw_columns = len((self.last_vision.get("raw") or {}).get("columns") or [])
 
-                    # If the VLM result is clearly incomplete, fall back to OCR
-                    # once for this observation. In the normal successful path
-                    # RapidOCR is never initialized/run at all.
-                    if visible_cards < 5 or confidence < 0.55:
+                    # Ollama is the PRIMARY reader. OCR is used only when the
+                    # VLM response is structurally unusable, not merely because
+                    # the model reports a cautious confidence score.
+                    if visible_cards < 5 or raw_columns < 8:
                         self._set_phase(
                             "ocr_fallback",
                             "Ollama unsicher – einmaliger OCR-Fallback",
@@ -185,7 +186,7 @@ class SpiderAgent:
                         )
                         fallback.diagnostics.append(
                             f"Ollama war unvollständig (confidence={confidence:.2f}, "
-                            f"angewendete Spalten={applied}); OCR-Fallback verwendet."
+                            f"Spalten={raw_columns}, angewendet={applied}); OCR-Fallback verwendet."
                         )
                         state = fallback
                 except Exception as exc:
@@ -252,7 +253,8 @@ class SpiderAgent:
             vision_meta = spider_ollama.apply_hint(state, hint)
             visible = sum(len(c.cards) for c in state.columns)
             confidence = float(vision_meta.get("confidence") or 0.0)
-            if visible >= 5 and confidence >= 0.55:
+            raw_columns = len((vision_meta.get("raw") or {}).get("columns") or [])
+            if visible >= 5 and raw_columns >= 8:
                 return state
 
             self._set_phase(
@@ -268,7 +270,7 @@ class SpiderAgent:
                 use_ocr=True,
             )
             fallback.diagnostics.append(
-                f"Verify-Fallback: Ollama confidence={confidence:.2f}, visible={visible}"
+                f"Verify-Fallback: Ollama confidence={confidence:.2f}, visible={visible}, columns={raw_columns}"
             )
             return fallback
         except Exception as exc:
