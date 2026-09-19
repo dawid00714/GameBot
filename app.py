@@ -12,7 +12,7 @@ import engine
 import strategy
 from learning import LearningStore
 
-app = FastAPI(title="Laya vs TypeSafe Arena", version="2.0.0")
+app = FastAPI(title="Laya vs TypeSafe Arena", version="2.1.0")
 lock = Lock()
 learning_store = LearningStore()
 arena_agents.start_laya_loading()
@@ -201,13 +201,19 @@ def index():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "version": "2.0.0"}
+    return {"ok": True, "version": "2.1.0"}
 
 
 @app.get("/api/state")
 def state():
     with lock:
         return game.snapshot()
+
+
+@app.post("/api/laya/retry")
+def retry_laya():
+    arena_agents.retry_laya_loading(clear_local_copy=False)
+    return {"ok": True, "laya": arena_agents.laya_status()}
 
 
 @app.post("/api/typesafe/key")
@@ -283,7 +289,7 @@ label{font-size:13px;color:var(--muted)}.check{display:flex;align-items:center;g
     <h1><span class="laya">Laya</span> vs <span class="typesafe">TypeSafe / Jev</span></h1>
     <div class="muted">8×8 Dame · adversariale Vorschau · persistentes Self-Play-Lernen</div>
   </div>
-  <div class="build">Arena Build 2.0</div>
+  <div class="build">Arena Build 2.1</div>
 </header>
 
 <main>
@@ -297,7 +303,7 @@ label{font-size:13px;color:var(--muted)}.check{display:flex;align-items:center;g
       <div id="turnInfo" class="muted"></div>
       <div class="separator"></div>
       <div class="score">
-        <div class="agentbox"><div class="laya"><strong>Laya</strong></div><div id="layaStatus" class="small muted">lädt…</div><div id="layaScore" class="big">0 Siege</div></div>
+        <div class="agentbox"><div class="laya"><strong>Laya</strong></div><div id="layaStatus" class="small muted">lädt…</div><div id="layaScore" class="big">0 Siege</div><button id="retryLaya" style="margin-top:8px">Laya neu laden</button></div>
         <div class="agentbox"><div class="typesafe"><strong>TypeSafe / Jev</strong></div><div id="typeStatus" class="small muted">API fehlt</div><div id="typeScore" class="big">0 Siege</div></div>
       </div>
     </section>
@@ -544,6 +550,18 @@ async function resetLearning(){
   if(r.ok){await load()}else{$('decision').textContent=data.detail||'Fehler beim Zurücksetzen'}
 }
 
+async function retryLaya(){
+  const r=await fetch('/api/laya/retry',{method:'POST'});
+  const data=await r.json();
+  if(!r.ok){
+    $('decision').textContent='Laya-Retry fehlgeschlagen:\n'+(data.detail||('HTTP '+r.status));
+  }else{
+    state.laya=data.laya;
+    render();
+  }
+}
+
+$('retryLaya').addEventListener('click',retryLaya);
 $('saveKey').addEventListener('click',saveApiKey);
 $('newMatch').addEventListener('click',newMatch);
 $('startStop').addEventListener('click',toggleRun);
