@@ -18,7 +18,7 @@ from spider_state import ocr_status, warm_ocr
 from spider_windows import WindowAutomationError, list_windows
 from vm_guest_input import clear_input_abort, request_input_abort
 
-app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="4.8.0")
+app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="4.9.0")
 agent = SpiderAgent()
 agent_lock = threading.RLock()
 step_lock = threading.Lock()
@@ -208,7 +208,7 @@ def index():
 def health():
     return {
         "ok": True,
-        "version": "4.8.0",
+        "version": "4.9.0",
         "windows_agent": True,
         "ocr_fallback": ocr_status(),
     }
@@ -414,7 +414,7 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
     <h1><span class="pink">Laya</span> / <span class="cyan">TypeSafe Jev</span> · Windows Spider Agent</h1>
     <div class="muted">Echte Windows-Maus aktiv · Alt+L startet/stoppt den Agenten sofort · Live-Screenshot</div>
   </div>
-  <div class="small muted">Build 4.8</div>
+  <div class="small muted">Build 4.9</div>
 </header>
 
 <main>
@@ -465,13 +465,13 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
       <div id="modelStatus" class="small muted" style="margin-top:8px"></div>
       <hr>
       <div class="row">
-        <label class="check"><input id="visionEnabled" type="checkbox"> Ollama-Vision zusätzlich verwenden (langsamer)</label>
+        <label class="check"><input id="visionEnabled" type="checkbox"> Ollama nur bei unsicherer UIA/FastOCR-Erkennung verwenden</label>
       </div>
       <div class="row" style="margin-top:8px">
         <select id="visionModel" style="flex:1"><option value="">Vision-Modelle laden…</option></select>
         <button id="refreshOllama">Ollama aktualisieren</button>
       </div>
-      <div id="ollamaStatus" class="small muted" style="margin-top:7px">Standard: FastOCR liest nur die 10 Karten-Spalten. Ollama ist optional für schwierige Stellungen.</div>
+      <div id="ollamaStatus" class="small muted" style="margin-top:7px">UIA/FastOCR hat Vorrang. Ollama wird nur aufgerufen, wenn die normale Erkennung nicht ausreicht.</div>
     </section>
 
     <section class="card panel">
@@ -758,12 +758,18 @@ async function refreshStatus(){
     }
     if(d.last_vision){
       const timing=d.last_vision.timing||{};
-      $('ollamaStatus').textContent=d.last_vision.error
-        ? 'Ollama Vision Fehler: '+d.last_vision.error
-        : 'Ollama Vision: '+d.last_vision.model+
+      if(d.last_vision.skipped){
+        $('ollamaStatus').textContent='Ollama übersprungen: '+(d.last_vision.reason||'UIA/FastOCR ausreichend');
+        $('ollamaStatus').className='small ok';
+      }else if(d.last_vision.error){
+        $('ollamaStatus').textContent='Ollama-Hilfe fehlgeschlagen, normale Erkennung läuft weiter: '+d.last_vision.error;
+        $('ollamaStatus').className='small warn';
+      }else{
+        $('ollamaStatus').textContent='Ollama-Hilfe: '+d.last_vision.model+
           ' · '+Number(timing.total_ms||0).toFixed(0)+' ms'+
-          ' · Confidence '+Number(d.last_vision.confidence||0).toFixed(2)+
           ' · Spalten: '+JSON.stringify(d.last_vision.applied_columns||[]);
+        $('ollamaStatus').className='small ok';
+      }
     }
 
     const sp=d.state?.stock_point;
