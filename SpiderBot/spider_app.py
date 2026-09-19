@@ -12,7 +12,7 @@ import spider_models
 from spider_agent import SpiderAgent, SpiderAgentError
 from spider_windows import WindowAutomationError, list_windows
 
-app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="3.0.0")
+app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="3.1.0")
 agent = SpiderAgent()
 agent_lock = threading.Lock()
 run_stop = threading.Event()
@@ -39,6 +39,7 @@ class ConfigRequest(BaseModel):
     depth: int = Field(default=3, ge=1, le=5)
     learning: bool = True
     action_delay: float = Field(default=0.85, ge=0.15, le=5.0)
+    input_mode: str = "auto"
 
 
 class StockPointRequest(BaseModel):
@@ -109,7 +110,7 @@ def index():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "version": "3.0.0", "windows_agent": True}
+    return {"ok": True, "version": "3.1.0", "windows_agent": True}
 
 
 @app.get("/api/windows")
@@ -141,6 +142,7 @@ def configure(req: ConfigRequest):
                 depth=req.depth,
                 learning=req.learning,
                 action_delay=req.action_delay,
+                input_mode=req.input_mode,
             )
             return agent.status()
     except Exception as exc:
@@ -275,7 +277,7 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
     <h1><span class="pink">Laya</span> / <span class="cyan">TypeSafe Jev</span> · Windows Spider Agent</h1>
     <div class="muted">Eigene virtuelle Maus · Drag mit gedrückter linker Taste · Live-Screenshot · selbstlernende Strategie</div>
   </div>
-  <div class="small muted">Build 3.0</div>
+  <div class="small muted">Build 3.1</div>
 </header>
 
 <main>
@@ -333,7 +335,15 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
         <div><label>Stock Y</label><input id="stockY" type="number" min="0" max="1" step="0.001" value="0.780" style="width:100%"></div>
         <div><label>Wartezeit pro Aktion</label><select id="delay"><option value=".45">0,45 s</option><option value=".85" selected>0,85 s</option><option value="1.2">1,2 s</option><option value="1.8">1,8 s</option></select></div>
       </div>
-      <div class="small muted" style="margin-top:8px">Die markierte Stelle aus deinem Screenshot ist als Ausgangspunkt voreingestellt. Für exakte Kalibrierung direkt auf den Kartenstapel im Live-Bild klicken.</div>
+      <div style="margin-top:9px">
+        <label>Mausmodus</label>
+        <select id="inputMode">
+          <option value="auto" selected>Auto – erst virtuelle Hintergrundmaus, dann zuverlässiger Fallback</option>
+          <option value="background">Nur virtuelle Hintergrundmaus</option>
+          <option value="system">Nur Windows-Systemmaus</option>
+        </select>
+      </div>
+      <div class="small muted" style="margin-top:8px">Die markierte Stelle aus deinem Screenshot ist als Ausgangspunkt voreingestellt. Für exakte Kalibrierung direkt auf den Kartenstapel im Live-Bild klicken. Wenn Microsoft Solitaire Hintergrund-Mausnachrichten ignoriert, nutzt „Auto“ kurz die Windows-Maus und setzt den Zeiger danach zurück.</div>
     </section>
 
     <section class="card panel">
@@ -410,7 +420,8 @@ async function saveConfig(){
     model:$('model').value,
     depth:parseInt($('depth').value,10),
     learning:$('learning').checked,
-    action_delay:parseFloat($('delay').value)
+    action_delay:parseFloat($('delay').value),
+    input_mode:$('inputMode').value
   };
   await api('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
   const stock={x:parseFloat($('stockX').value),y:parseFloat($('stockY').value)};
@@ -514,6 +525,7 @@ async function refreshStatus(){
 
     $('stockX').value=Number(d.config.stock_x).toFixed(3);
     $('stockY').value=Number(d.config.stock_y).toFixed(3);
+    if(d.config.input_mode) $('inputMode').value=d.config.input_mode;
   }catch(e){
     $('mainStatus').textContent='Serverfehler';
     $('error').textContent=e.message;
@@ -550,6 +562,7 @@ $('retryLaya').addEventListener('click',retryLaya);
 $('model').addEventListener('change',saveConfig);
 $('depth').addEventListener('change',saveConfig);
 $('delay').addEventListener('change',saveConfig);
+$('inputMode').addEventListener('change',saveConfig);
 $('learning').addEventListener('change',saveConfig);
 
 refreshWindows();
