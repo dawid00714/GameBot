@@ -1,94 +1,115 @@
-# Laya Checkers
+# Laya vs TypeSafe / Jev – Checkers Arena
 
-Ein lokales 8×8-Dame-Spiel, bei dem **Laya** die Züge der KI auswählt.
+Lokale 8×8-Dame-Arena, in der **Laya** gegen **TypeSafe System One / Jev** spielt.
 
-## Architektur
+## Neu in Arena Build 2.0
 
-- **Regel-Engine**: erzeugt ausschließlich legale Züge, Pflichtschläge, Mehrfachschläge und Damenumwandlung.
-- **Laya**: bewertet die aktuell legalen Züge als strukturierte `choice`-Entscheidung und wählt den KI-Zug.
-- **Fallback**: falls Laya noch nicht geladen werden kann oder einen ungültigen Wert liefert, wird ein deterministischer taktischer Ersatz-Zug benutzt.
-- **Web-UI**: FastAPI + Browser-Oberfläche auf einem 8×8-Brett.
-- **Laya-Debugpanel**: zeigt gewählten Zug, Confidence und Wahrscheinlichkeiten.
-
-Das Spiel verwendet eine bewusst kompakte 8×8-Regelvariante: normale Steine ziehen und schlagen diagonal vorwärts, Damen in beide Richtungen; Schlagen ist Pflicht; Mehrfachschläge sind möglich.
+- Laya spielt automatisch gegen TypeSafe/Jev.
+- TypeSafe-API-Key kann direkt in der lokalen Weboberfläche eingegeben werden.
+- Der API-Key wird **nur im RAM** des laufenden Python-Prozesses gespeichert und weder in GitHub noch in der Lern-Datei abgelegt.
+- Beide Agenten erhalten eine echte adversariale Vorausschau per Minimax/Alpha-Beta-Suche.
+- Einstellbare Suchtiefe: 1 bis 6 Halbzüge.
+- Beide Agenten bekommen zu jedem legalen Zug:
+  - Lookahead-Score
+  - Principal Variation
+  - Schlag-/Promotionsinformationen
+  - gegnerische Antwortmöglichkeiten
+  - persistente Lernwerte aus früheren Partien
+- Self-Play-Lernen wird lokal in `arena_learning.json` gespeichert.
+- Seiten können zwischen Partien getauscht werden.
+- Live-Anzeige von Zug, Confidence, Lookahead, Lernbonus und Partiestatistik.
 
 ## Start unter Windows
-
-Doppelklick auf:
 
 ```
 start.bat
 ```
 
-Beim ersten Start werden Python-Pakete installiert. Laya lädt beim ersten KI-Zug außerdem das Modell von Hugging Face herunter.
-
-Danach im Browser öffnen:
+Beim Start werden die Abhängigkeiten installiert bzw. aktualisiert. Danach:
 
 ```
 http://127.0.0.1:8000
 ```
 
-## Manueller Start
+## TypeSafe API-Key
 
-```bash
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-uvicorn app:app --host 127.0.0.1 --port 8000
-```
+Du kannst den Key direkt in der Oberfläche unter **TypeSafe API** einfügen.
 
-Linux/macOS:
+Alternativ kannst du ihn vor dem Start als Umgebungsvariable setzen:
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app:app --host 127.0.0.1 --port 8000
-```
-
-## Modell wechseln
-
-Standard:
-
-```
-convaiinnovations/laya
-```
-
-Alternativ vor dem Start:
-
-Windows PowerShell:
+PowerShell:
 
 ```powershell
-$env:LAYA_MODEL="convaiinnovations/laya-multilingual"
+$env:TYPESAFE_API_KEY="dein-key"
 ```
 
-Linux/macOS:
+Optional kann ein bestimmtes TypeSafe-Modell gesetzt werden:
 
-```bash
-export LAYA_MODEL="convaiinnovations/laya-multilingual"
+```powershell
+$env:TYPESAFE_MODEL="jev-latest"
 ```
 
-## Was Laya tatsächlich macht
+Wenn `TYPESAFE_MODEL` nicht gesetzt ist, verwendet das offizielle SDK den serverseitigen Standard.
 
-Laya bekommt nicht einfach das Brett und darf irgendeinen Text erzeugen. Die Engine erzeugt zuerst alle legalen Züge. Danach bekommt Laya eine `choice`-Frage, deren Optionen genau diese Züge sind. Zu jedem Zug werden taktische Merkmale mitgegeben, z. B. Schlaganzahl, Umwandlung, Materiallage und mögliche unmittelbare Gegenschläge.
+## Laya
 
-Dadurch gilt:
+Standardmäßig wird lokal geladen:
 
 ```
-Brett -> legale Züge -> Laya Choice -> ausgewählter legaler Zug
+convaiinnovations/laya-multilingual
 ```
 
-Laya kann deshalb keinen illegalen Zug spielen.
+Anderes Modell:
 
-## API
+```powershell
+$env:LAYA_MODEL="convaiinnovations/laya"
+```
 
-- `GET /api/state` – aktueller Spielzustand
-- `POST /api/new` – neues Spiel
-- `POST /api/move` – menschlichen Zug ausführen, danach antwortet Laya
-- `GET /health` – Healthcheck
+## Vorausschau
 
-## Hinweise
+Die Modelle müssen den Spielbaum nicht selbst simulieren. Vor jedem Agentenzug analysiert `strategy.py` alle legalen Kandidaten adversarial:
 
-Das Basismodell ist nicht speziell auf Dame trainiert. Das Projekt ist daher vor allem ein funktionierender Test, um Laya als schnelle Decision Engine in einem Spiel einzusetzen. Für deutlich stärkeres Spiel wäre der nächste Schritt Fine-Tuning auf Dame-Positionen oder die Kombination mit tieferer Suche.
+```
+aktuelle Stellung
+   ↓
+alle legalen Züge
+   ↓
+Minimax/Alpha-Beta bis Tiefe N
+   ↓
+Lookahead-Score + Principal Variation
+   ↓
+Lernwert aus früheren Partien
+   ↓
+Laya ODER TypeSafe/Jev wählt per Choice
+```
 
-Laya-Projekt: https://github.com/NandhaKishorM/laya
+Damit sind die Entscheidungen weiterhin echte Laya-/TypeSafe-`choice`-Entscheidungen, aber beide Modelle erhalten vorher berechnete Informationen darüber, was mehrere Züge in die Zukunft passieren kann.
+
+## Was „selbst lernen“ hier bedeutet
+
+Das Projekt verändert **nicht automatisch die Gewichte von Jev oder Laya** nach jeder Partie.
+
+Stattdessen besitzt jeder Agent eine eigene persistente Experience-Memory:
+
+- exakte State/Move-Q-Werte für wiederkehrende Stellungen
+- Besuche pro Zug
+- globale gelernte Feature-Gewichte
+- Siege, Niederlagen und Remis
+- Online-Update nach jeder abgeschlossenen Partie
+
+Diese Lernwerte werden bei späteren Entscheidungen wieder an den jeweiligen Agenten übergeben. Dadurch kann sich das Verhalten über Self-Play-Partien verändern, ohne Jev selbst neu zu trainieren.
+
+Für echtes Weight-Fine-Tuning von Laya wäre ein separater Trainingslauf nötig. Jev ist ein gehostetes TypeSafe-Modell; dieses Projekt kann dessen Gewichte nicht lokal verändern.
+
+## Dateien
+
+- `engine.py` – Dame-Regeln
+- `strategy.py` – Minimax/Alpha-Beta-Vorausschau
+- `learning.py` – persistentes Self-Play-Lernen
+- `arena_agents.py` – Laya- und TypeSafe/Jev-Anbindung
+- `app.py` – FastAPI + Arena-Weboberfläche
+- `arena_learning.json` – lokale Lerndaten, wird nicht committed
+
+## Sicherheit
+
+Den TypeSafe-API-Key niemals direkt in Python-Dateien oder GitHub committen. Die Weboberfläche sendet ihn nur an deinen lokalen FastAPI-Prozess auf `127.0.0.1`.
