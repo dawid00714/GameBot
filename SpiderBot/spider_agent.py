@@ -10,7 +10,7 @@ import spider_models
 import spider_ollama
 from spider_learning import SpiderLearning
 from spider_solver import SpiderAction, add_lookahead, generate_actions, state_signature
-from spider_state import SpiderState, read_state
+from spider_state import SpiderState, read_state, verify_rank_at_card
 from spider_windows import WindowAutomationError, WindowController, frame_difference
 from vm_guest_input import input_abort_requested
 
@@ -519,6 +519,123 @@ class SpiderAgent:
                 "overridden": False,
                 "executed": selected.notation(),
             }
+
+        # FINAL LEGALITY GATE AGAINST THE ACTUAL PIXELS.
+        #
+        # The solver can only generate 6 -> 7, never 6 -> K. If UI Automation
+        # mislabels the board, however, a legal *internal* move can point at the
+        # wrong physical card. Before the real mouse is allowed to move, verify
+        # the source and destination ranks directly from the current screenshot.
+        if selected.kind == "move":
+            visual_checks: list[dict[str, Any]] = []
+
+            def visual_move_ok(candidate: SpiderAction) -> bool:
+                if candidate.kind != "move":
+                    return True
+                if candidate.source is None or candidate.destination is None or candidate.start_index is None:
+                    return False
+
+                src_col = state.columns[candidate.source]
+                dst_col = state.columns[candidate.destination]
+                if candidate.start_index >= len(src_col.cards):
+                    return False
+
+                source_card = src_col.cards[candidate.start_index]
+                source_rank = candidate.moving[0][0]
+                src_check = verify_rank_at_card(before, source_card, source_rank)
+                visual_checks.append({
+                    "action": candidate.notation(),
+                    "side": "source",
+                    "column": candidate.source + 1,
+                    **src_check,
+                })
+                if not src_check.get("ok"):
+                    return False
+
+                if dst_col.cards:
+                    expected_value = source_card.value + 1
+                    expected_rank = next(
+                        (rank for rank, value in {
+                            "A": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6,
+                            "7": 7, "8": 8, "9": 9, "10": 10,
+                            "J": 11, "Q": 12, "K": 13,
+                        }.items() if value == expected_value),
+                        None,
+                    )
+                    if expected_rank is None:
+                        return False
+
+                    # Internal rule check first.
+                    if dst_col.cards[-1].value != expected_value:
+                        visual_checks.append({
+                            "action": candidate.notation(),
+                            "side": "destination",
+                            "status": "internal_illegal",
+                            "expected": expected_rank,
+                            "observed": [dst_col.cards[-1].rank],
+                        })
+                        return False
+
+                    dst_check = verify_rank_at_card(before, dst_col.cards[-1], expected_rank)
+                    visual_checks.append({
+                        "action": candidate.notation(),
+                        "side": "destination",
+                        "column": candidate.destination + 1,
+                        **dst_check,
+                    })
+                    if not dst_check.get("ok"):
+                        return False
+
+                return True
+
+            if not visual_move_ok(selected):
+                # The model's chosen action is unsafe on the pixels. Search the
+                # already-ranked legal candidates for the first visually
+                # verified move instead. Never execute an unverified drag.
+                replacement_action = None
+                for candidate in ranked:
+                    if candidate.notation() == selected.notation() or candidate.kind != "move":
+                        continue
+                    if visual_move_ok(candidate):
+                        replacement_action = candidate
+                        break
+
+                if replacement_action is None:
+                    model_debug["visual_legality_gate"] = {
+                        "passed": False,
+                        "checks": visual_checks[-16:],
+                    }
+                    self.last_action = {
+                        "model": self.config.model,
+                        "action": selected.to_dict(),
+                        "accepted": False,
+                        "model_debug": model_debug,
+                        "warning": (
+                            "Zug NICHT ausgeführt: visuelle Rangprüfung konnte "
+                            "Quelle/Ziel nicht sicher bestätigen."
+                        ),
+                    }
+                    raise SpiderAgentError(
+                        "Zug gestoppt: Die Pixelprüfung bestätigt den erkannten "
+                        "Quell-/Zielrang nicht. Keine Mausbewegung wurde ausgeführt."
+                    )
+
+                previous = selected
+                selected = replacement_action
+                model_debug["visual_legality_gate"] = {
+                    "passed": True,
+                    "overridden": True,
+                    "rejected": previous.notation(),
+                    "executed": selected.notation(),
+                    "checks": visual_checks[-16:],
+                }
+            else:
+                model_debug["visual_legality_gate"] = {
+                    "passed": True,
+                    "overridden": False,
+                    "executed": selected.notation(),
+                    "checks": visual_checks[-8:],
+                }
 
         if input_abort_requested():
             raise SpiderAgentError("STOP_REQUESTED")
