@@ -113,3 +113,107 @@ Für echtes Weight-Fine-Tuning von Laya wäre ein separater Trainingslauf nötig
 ## Sicherheit
 
 Den TypeSafe-API-Key niemals direkt in Python-Dateien oder GitHub committen. Die Weboberfläche sendet ihn nur an deinen lokalen FastAPI-Prozess auf `127.0.0.1`.
+
+
+---
+
+# Windows Spider Agent (Build 3.0)
+
+Zusätzlich zur Dame-Arena enthält das Repository jetzt einen Agenten für das echte Windows-Spiel **Solitaire & Casual Games / Spider**.
+
+## Start
+
+```
+start_spider.bat
+```
+
+Danach öffnet sich:
+
+```
+http://127.0.0.1:8010
+```
+
+## Bedienung
+
+1. Spider Solitaire in Windows öffnen und sichtbar lassen.
+2. Im Browser unter **Windows-Spielfenster** das Fenster `Solitaire & Casual Games` auswählen.
+3. **Diagnose / Karten lesen** drücken.
+4. Prüfen, ob im Bereich `Erkannter Spielzustand` die sichtbaren Karten erkannt werden.
+5. Im Live-Screenshot einmal direkt auf den Stapel **Neue Karten** klicken. Damit wird die Stock-Position exakt kalibriert. Als Ausgangswert ist die Position aus dem bereitgestellten Screenshot hinterlegt.
+6. Unter **Modell** entweder `Laya lokal` oder `TypeSafe / Jev` auswählen.
+7. Für TypeSafe den API-Key im Feld einfügen und **API verbinden** drücken.
+8. Mit **1 Aktion** zuerst einen einzelnen Zug testen. Danach mit **Start** automatisch spielen lassen.
+
+## Virtuelle Maus
+
+Der Agent benutzt standardmäßig Windows-`WM_MOUSE...`-Nachrichten direkt an das ausgewählte Spiel-Fenster:
+
+- Linke Maustaste wird auf der Quellkarte gedrückt.
+- Die Taste bleibt während der Bewegung gedrückt.
+- Die Karte wird zum Ziel gezogen.
+- Am Ziel wird die linke Maustaste losgelassen.
+- Der physische Mauszeiger des Benutzers wird dabei nicht bewegt.
+
+Ein Stock-Deal ist ein virtueller Linksklick auf den kalibrierten Punkt.
+
+Einige Spiele blockieren absichtlich Hintergrund-Mausnachrichten. Das Tool erkennt einen solchen Fall daran, dass sich das Spielbild nach dem Drag nicht relevant ändert, sperrt die fehlgeschlagene Aktion für diese Stellung und zeigt eine Warnung an. Es gibt absichtlich keinen stillen Fallback, der den echten Mauszeiger übernimmt.
+
+## Bilderkennung
+
+Die Zustandslesung arbeitet in zwei Stufen:
+
+1. **Windows UI Automation (UIA)**: bevorzugt. Falls Microsoft Solitaire Karten als Accessibility-Elemente veröffentlicht, werden Rang, Position und Spalte direkt gelesen.
+2. **RapidOCR + OpenCV**: Fallback. Sichtbare Ränge werden aus dem Fenster-Screenshot erkannt und auf die zehn Spider-Spalten gruppiert.
+
+Für den gezeigten **1-Suit-Spider** wird ein erkannter Rang ohne explizite Farbangabe als Pik behandelt.
+
+## Vorausschau
+
+Das Modell bekommt nicht einfach rohe Pixel und erfindet eine Mausbewegung. Die Pipeline ist:
+
+```
+Windows-Spiel
+   ↓
+Screenshot / UIA
+   ↓
+erkannte 10 Spalten + sichtbare Karten
+   ↓
+legale Spider-Züge erzeugen
+   ↓
+Lookahead-Suche über sichtbare, deterministische Züge
+   ↓
+persistente Erfahrungen aus früheren Partien
+   ↓
+Laya ODER TypeSafe/Jev wählt eine legale Aktion
+   ↓
+virtueller Drag / Stock-Klick
+   ↓
+neuen echten Bildschirmzustand beobachten
+```
+
+Die Vorausschau lässt sich auf 1 bis 5 Schritte einstellen. Verdeckte Karten sind unbekannt; ein Simulationszweig kann daher nicht so tun, als wüsste er die darunterliegende Karte. Das Aufdecken einer unbekannten Karte wird positiv bewertet, anschließend wird wieder der echte Windows-Bildschirm gelesen.
+
+## Selbstlernen
+
+`spider_learning.json` speichert getrennt für Laya und TypeSafe/Jev:
+
+- State/Action-Q-Werte
+- Anzahl Besuche bekannter Aktionen
+- globale Feature-Gewichte
+- Siege / Niederlagen
+- Anzahl ausgeführter Züge
+
+Diese Datei wird nicht nach GitHub committed.
+
+Das Online-Lernen verändert nicht direkt die Gewichte von Jev oder Laya. Es bildet eine persistente Erfahrungsschicht um das jeweilige Entscheidungsmodell. Ein echtes Laya-Fine-Tuning kann später auf den gesammelten Partiedaten aufgebaut werden.
+
+## Wichtige Dateien
+
+- `spider_windows.py` – Windows-Fensteraufnahme und virtuelle Maus
+- `spider_state.py` – UIA/OCR-Erkennung des Spider-Bretts
+- `spider_solver.py` – legale Züge, Heuristiken und Lookahead
+- `spider_models.py` – Laya / TypeSafe-Jev
+- `spider_learning.py` – persistentes Lernen
+- `spider_agent.py` – Observe → Decide → Act → Verify Schleife
+- `spider_app.py` – Web-Steuerung
+- `start_spider.bat` – Windows-Starter
