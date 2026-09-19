@@ -48,6 +48,6 @@ if errorlevel 1 (
 echo [4/5] Starte SpiderBot auf http://127.0.0.1:8010
 echo       ECHTE WINDOWS-MAUS IST AKTIV.
 echo       ALT+L = Agent START / STOP.
-echo [5/5] Im Browser muss oben Build 4.9 stehen.
+echo [5/5] Im Browser muss oben Build 5.0 stehen.
 start "" http://127.0.0.1:8010
 ".venv\Scripts\python.exe" -m uvicorn spider_app:app --host 127.0.0.1 --port 8010
