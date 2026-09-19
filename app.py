@@ -12,7 +12,7 @@ import engine
 import strategy
 from learning import LearningStore
 
-app = FastAPI(title="Laya vs TypeSafe Arena", version="2.1.0")
+app = FastAPI(title="Laya vs TypeSafe Arena", version="2.2.0")
 lock = Lock()
 learning_store = LearningStore()
 arena_agents.start_laya_loading()
@@ -39,6 +39,7 @@ class ArenaGame:
         self.history: list[dict[str, Any]] = []
         self.last_decision: dict[str, Any] | None = None
         self.last_candidates: list[dict[str, Any]] = []
+        self.last_error: str | None = None
         self.position_counts: dict[str, int] = {}
         self.side_agents = (
             {engine.BLACK: "typesafe", engine.RED: "laya"}
@@ -114,10 +115,43 @@ class ArenaGame:
                 3,
             )
 
+        self.last_error = None
         if current_agent == "laya":
-            move, decision = arena_agents.choose_laya(self.board, self.turn, analyses)
+            try:
+                move, decision = arena_agents.choose_laya(self.board, self.turn, analyses)
+            except arena_agents.AgentUnavailable as exc:
+                # Keep the match running if Laya has a one-off inference failure.
+                # The fallback is explicit in the UI and uses the already-computed
+                # adversarial search score, so it is never silently presented as Laya.
+                selected_fallback = max(
+                    analyses,
+                    key=lambda x: float(x["combined_score"]),
+                )
+                move = selected_fallback["move"]
+                self.last_error = str(exc)
+                decision = {
+                    "agent": "laya",
+                    "source": "search_fallback_after_laya_error",
+                    "model": arena_agents.laya_status().get("model"),
+                    "selected": selected_fallback["id"],
+                    "notation": selected_fallback["notation"],
+                    "confidence": None,
+                    "probabilities": {},
+                    "lookahead_score": selected_fallback["lookahead_score"],
+                    "learning_bonus": selected_fallback.get("learning_bonus", 0.0),
+                    "combined_score": selected_fallback.get("combined_score"),
+                    "learned_q": selected_fallback.get("learned_q", 0.0),
+                    "visits": selected_fallback.get("visits", 0),
+                    "principal_variation": selected_fallback.get("principal_variation", []),
+                    "search_depth": selected_fallback["search_depth"],
+                    "error": self.last_error,
+                }
         else:
-            move, decision = arena_agents.choose_typesafe(self.board, self.turn, analyses)
+            try:
+                move, decision = arena_agents.choose_typesafe(self.board, self.turn, analyses)
+            except arena_agents.AgentUnavailable as exc:
+                self.last_error = str(exc)
+                raise
 
         selected = next(a for a in analyses if a["id"] == move.id)
         self.trajectory.append(
@@ -174,6 +208,7 @@ class ArenaGame:
             "swap_sides": self.swap_sides,
             "last_decision": self.last_decision,
             "last_candidates": self.last_candidates,
+            "last_error": self.last_error,
             "history": self.history[-12:],
             "laya": arena_agents.laya_status(),
             "typesafe": arena_agents.typesafe_status(),
@@ -201,7 +236,7 @@ def index():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "version": "2.1.0"}
+    return {"ok": True, "version": "2.2.0"}
 
 
 @app.get("/api/state")
@@ -289,7 +324,7 @@ label{font-size:13px;color:var(--muted)}.check{display:flex;align-items:center;g
     <h1><span class="laya">Laya</span> vs <span class="typesafe">TypeSafe / Jev</span></h1>
     <div class="muted">8×8 Dame · adversariale Vorschau · persistentes Self-Play-Lernen</div>
   </div>
-  <div class="build">Arena Build 2.1</div>
+  <div class="build">Arena Build 2.2</div>
 </header>
 
 <main>
@@ -301,6 +336,7 @@ label{font-size:13px;color:var(--muted)}.check{display:flex;align-items:center;g
     <section class="card panel">
       <div id="status" class="status">Arena wird geladen…</div>
       <div id="turnInfo" class="muted"></div>
+      <div id="errorBanner" class="small bad" style="display:none;margin-top:8px"></div>
       <div class="separator"></div>
       <div class="score">
         <div class="agentbox"><div class="laya"><strong>Laya</strong></div><div id="layaStatus" class="small muted">lädt…</div><div id="layaScore" class="big">0 Siege</div><button id="retryLaya" style="margin-top:8px">Laya neu laden</button></div>
@@ -419,6 +455,7 @@ function render(){
     const d=state.last_decision;
     $('decision').textContent=JSON.stringify({
       agent:d.agent,
+      source:d.source||'model',
       side:d.side,
       move:d.notation,
       model:d.model,
@@ -429,8 +466,18 @@ function render(){
       learned_q:d.learned_q,
       visits:d.visits,
       principal_variation:d.principal_variation,
-      search_depth:d.search_depth
+      search_depth:d.search_depth,
+      error:d.error||state.last_error||null
     },null,2);
+  }
+
+  const errorBanner=$('errorBanner');
+  if(state.last_error){
+    errorBanner.style.display='block';
+    errorBanner.textContent='Hinweis: '+state.last_error;
+  }else{
+    errorBanner.style.display='none';
+    errorBanner.textContent='';
   }
 
   const hist=$('history');
@@ -503,7 +550,10 @@ async function oneStep(){
     if(!r.ok){
       running=false;
       $('startStop').textContent='Start';
-      $('decision').textContent='Agent gestoppt:\n'+(data.detail||('HTTP '+r.status));
+      const msg=data.detail||('HTTP '+r.status);
+      $('decision').textContent='Agent gestoppt:\n'+msg;
+      $('errorBanner').style.display='block';
+      $('errorBanner').textContent='Agent gestoppt: '+msg;
       return false;
     }
     state=data;
