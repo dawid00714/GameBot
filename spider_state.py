@@ -320,7 +320,7 @@ def read_state(
     frame: np.ndarray,
     client_left: int,
     client_top: int,
-    stock_point: tuple[float, float] = (0.82, 0.74),
+    stock_point: tuple[float, float] = (0.82, 0.78),
 ) -> SpiderState:
     height, width = frame.shape[:2]
     uia_cards, diag = _read_uia(hwnd, width, height, client_left, client_top)
