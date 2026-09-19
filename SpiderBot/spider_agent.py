@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import cv2
+import numpy as np
 
 import spider_models
 import spider_ollama
@@ -257,21 +258,86 @@ class SpiderAgent:
     def _is_stuck(self, state: SpiderState, actions: list[SpiderAction]) -> bool:
         return not actions and not state.stock_available
 
+    @staticmethod
+    def _uia_card_top(card) -> float:
+        return float(card.y) - max(0.0, float(card.height)) / 2.0
+
+    @staticmethod
+    def _clamp_y(state: SpiderState, y: float) -> float:
+        return max(state.height * 0.10, min(state.height * 0.78, float(y)))
+
+    def _card_anchor_y(
+        self,
+        state: SpiderState,
+        card,
+        *,
+        destination: bool,
+    ) -> float:
+        """Return a point on the exposed upper part of a physical card.
+
+        Never use the centre of a UIA rectangle for dragging. Microsoft
+        Solitaire often reports a bounding rectangle much taller than the
+        actually exposed card area; its centre can therefore be green empty
+        table space hundreds of pixels below the card.
+        """
+        if str(card.source).startswith("uia") and card.height > state.height * 0.03:
+            top = self._uia_card_top(card)
+            offset = max(
+                16.0,
+                min(
+                    state.height * (0.040 if destination else 0.032),
+                    38.0 if destination else 30.0,
+                ),
+            )
+            return self._clamp_y(state, top + offset)
+
+        # OCR coordinates refer to the rank glyph near the card's upper edge.
+        offset = max(
+            12.0,
+            state.height * (0.030 if destination else 0.022),
+        )
+        return self._clamp_y(state, card.y + offset)
+
+    @staticmethod
+    def _point_is_on_card(frame, x: float, y: float) -> dict[str, Any]:
+        """Check that an intended mouse point is actually over card pixels."""
+        h, w = frame.shape[:2]
+        cx, cy = int(round(x)), int(round(y))
+        rx = max(12, int(w * 0.012))
+        ry = max(10, int(h * 0.014))
+        x0, x1 = max(0, cx - rx), min(w, cx + rx)
+        y0, y1 = max(0, cy - ry), min(h, cy + ry)
+        patch = frame[y0:y1, x0:x1]
+        if patch.size == 0:
+            return {"ok": False, "reason": "empty_patch", "white_ratio": 0.0}
+
+        hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+        sat = hsv[:, :, 1]
+        val = hsv[:, :, 2]
+
+        # Card backgrounds are light/low-saturation; the green felt is not.
+        white_like = ((val >= 145) & (sat <= 115))
+        ratio = float(white_like.mean())
+
+        # Also reject a patch that is overwhelmingly green felt.
+        hue = hsv[:, :, 0]
+        green_like = ((hue >= 35) & (hue <= 100) & (sat >= 70) & (val >= 45))
+        green_ratio = float(green_like.mean())
+
+        return {
+            "ok": bool(ratio >= 0.16 and green_ratio <= 0.72),
+            "white_ratio": round(ratio, 3),
+            "green_ratio": round(green_ratio, 3),
+            "point": [round(float(x), 1), round(float(y), 1)],
+        }
+
     def _source_point(self, state: SpiderState, action: SpiderAction) -> tuple[float, float]:
         assert action.source is not None and action.start_index is not None
         col = state.columns[action.source]
         if action.start_index >= len(col.cards):
             raise SpiderAgentError("Quellkarte ist in der erkannten Stellung nicht mehr vorhanden.")
         card = col.cards[action.start_index]
-
-        # x uses the stable tableau-column center. y comes from UIA/OCR.
-        x = col.x
-        if card.source == "uia" and card.height > state.height * 0.03:
-            y = card.y
-        else:
-            # OCR usually returns the tiny rank glyph near the card's top-left.
-            y = card.y + max(12.0, state.height * 0.025)
-        return x, y
+        return col.x, self._card_anchor_y(state, card, destination=False)
 
     def _destination_point(self, state: SpiderState, action: SpiderAction) -> tuple[float, float]:
         assert action.destination is not None
@@ -279,14 +345,12 @@ class SpiderAgent:
         x = col.x
         if col.cards:
             card = col.cards[-1]
-            if card.source == "uia" and card.height > state.height * 0.03:
-                y = card.y
-            else:
-                y = card.y + max(22.0, state.height * 0.045)
+            y = self._card_anchor_y(state, card, destination=True)
         else:
-            # Empty-column drop zone in Microsoft Spider.
-            y = state.height * 0.31
-        return x, y
+            # Empty columns are dropped near the tableau header, not in the
+            # middle of the green play field.
+            y = state.height * 0.23
+        return x, self._clamp_y(state, y)
 
     def _execute(
         self,
@@ -313,6 +377,31 @@ class SpiderAgent:
             else:
                 start = self._source_point(state, action)
                 end = self._destination_point(state, action)
+
+                src_surface = self._point_is_on_card(before, *start)
+                dst_col = state.columns[action.destination]
+                dst_surface = (
+                    self._point_is_on_card(before, *end)
+                    if dst_col.cards
+                    else {"ok": True, "reason": "empty_column"}
+                )
+                debug["drag_geometry"] = {
+                    "start": [round(start[0], 1), round(start[1], 1)],
+                    "end": [round(end[0], 1), round(end[1], 1)],
+                    "source_surface": src_surface,
+                    "destination_surface": dst_surface,
+                }
+
+                if not src_surface.get("ok"):
+                    raise SpiderAgentError(
+                        "Sicherheitsstopp: Quellpunkt liegt laut Screenshot nicht auf einer Karte."
+                    )
+                if dst_col.cards and not dst_surface.get("ok"):
+                    raise SpiderAgentError(
+                        "Sicherheitsstopp: Zielpunkt liegt laut Screenshot nicht auf der Zielkarte. "
+                        "Der Drag wurde NICHT ausgeführt."
+                    )
+
                 self._set_phase(
                     "input_drag",
                     f"Karte ziehen: DOWN → HALTEN+BEWEGEN → UP ({action.notation()})",
