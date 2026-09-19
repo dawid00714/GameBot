@@ -218,12 +218,41 @@ def choose_laya(board: list[list[str]], side: str, analyses: list[dict[str, Any]
         raise AgentUnavailable("Laya lädt noch im Hintergrund.")
 
     questions = {"move": _question(analyses)}
-    result = agent.predict(_state(board, side, analyses, "laya"), questions)
-    answer = result["answers"]["move"]
-    selected = answer.get("choice")
+    last_exc: Exception | None = None
+    result = None
+
+    # A decision-model call should not kill an entire arena run because of one
+    # transient inference hiccup. Retry once before reporting the failure.
+    for attempt in range(2):
+        try:
+            result = agent.predict(_state(board, side, analyses, "laya"), questions)
+            last_exc = None
+            break
+        except Exception as exc:
+            last_exc = exc
+            if attempt == 0:
+                time.sleep(0.15)
+
+    if result is None:
+        raise AgentUnavailable(
+            f"Laya-Inferenz fehlgeschlagen: {type(last_exc).__name__}: {last_exc}"
+        ) from last_exc
+
+    try:
+        answer = result["answers"]["move"]
+        selected = answer.get("choice")
+    except Exception as exc:
+        raise AgentUnavailable(
+            f"Laya-Antwort konnte nicht gelesen werden: {type(exc).__name__}: {exc}; "
+            f"raw={result!r}"
+        ) from exc
+
     by_id = {a["id"]: a for a in analyses}
     if selected not in by_id:
-        raise AgentUnavailable(f"Laya lieferte einen unbekannten Zug: {selected!r}")
+        raise AgentUnavailable(
+            f"Laya lieferte einen unbekannten Zug: {selected!r}; "
+            f"erlaubt={list(by_id.keys())!r}"
+        )
 
     chosen = by_id[selected]
     return chosen["move"], {
