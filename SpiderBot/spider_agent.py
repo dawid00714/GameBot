@@ -38,6 +38,7 @@ class SpiderAgent:
         self.last_action: dict[str, Any] | None = None
         self.last_error: str | None = None
         self.last_frame = None
+        self.last_action_count = 0
         self.moves = 0
         self.running = False
         self.game_finished = False
@@ -116,6 +117,9 @@ class SpiderAgent:
             info.top,
             stock_point=(self.config.stock_x, self.config.stock_y),
         )
+        if state.stock_point is not None:
+            self.config.stock_x = float(state.stock_point[0])
+            self.config.stock_y = float(state.stock_point[1])
         self.last_state = state
         self.last_frame = frame
         return state, frame
@@ -181,11 +185,17 @@ class SpiderAgent:
 
         # First try a true background/virtual mouse. Microsoft Solitaire can
         # ignore WM_MOUSE messages, so AUTO falls back to reliable system input.
+        stock_x, stock_y = (
+            state.stock_point
+            if state.stock_point is not None
+            else (self.config.stock_x, self.config.stock_y)
+        )
+
         if mode in ("auto", "background"):
             if action.kind == "deal":
                 ctl.click_normalized(
-                    self.config.stock_x,
-                    self.config.stock_y,
+                    stock_x,
+                    stock_y,
                     mode="background",
                 )
             else:
@@ -203,7 +213,7 @@ class SpiderAgent:
         # Reliable fallback. The cursor is restored immediately after the
         # action, so the agent does not leave the user's mouse displaced.
         if action.kind == "deal":
-            x, y = ctl.normalized_to_client(self.config.stock_x, self.config.stock_y)
+            x, y = ctl.normalized_to_client(stock_x, stock_y)
             ctl.system_click(x, y)
         else:
             assert start is not None and end is not None
@@ -235,6 +245,7 @@ class SpiderAgent:
             generate_actions(state),
             self.config.depth,
         )
+        self.last_action_count = len(actions)
 
         sig = state_signature(state)
         banned = self.failed_actions.get(sig, set())
@@ -381,6 +392,7 @@ class SpiderAgent:
             },
             "window": info,
             "moves": self.moves,
+            "legal_actions_detected": self.last_action_count,
             "game_finished": self.game_finished,
             "game_won": self.game_won,
             "last_error": self.last_error,
