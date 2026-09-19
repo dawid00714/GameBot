@@ -1,30 +1,80 @@
 from __future__ import annotations
 
 import os
+import threading
+import time
 import traceback
 from typing import Any
 
 import engine
 
-_MODEL_NAME = os.getenv("LAYA_MODEL", "convaiinnovations/laya")
+# The multilingual checkpoint is smaller/faster than the English large model and
+# is a better default for a local Windows demo. Override with LAYA_MODEL if wanted.
+_MODEL_NAME = os.getenv("LAYA_MODEL", "convaiinnovations/laya-multilingual")
+_LOAD_WAIT_SECONDS = float(os.getenv("LAYA_LOAD_WAIT_SECONDS", "2.5"))
+
 _agent = None
 _load_error: str | None = None
+_load_started_at: float | None = None
+_load_finished_at: float | None = None
+_loading = False
+_load_lock = threading.Lock()
+_load_event = threading.Event()
 
 
-def _load_agent():
-    global _agent, _load_error
-    if _agent is not None:
-        return _agent
-    if _load_error is not None:
-        raise RuntimeError(_load_error)
-
+def _load_worker():
+    global _agent, _load_error, _loading, _load_finished_at
     try:
         import laya
-        _agent = laya.load(_MODEL_NAME)
-        return _agent
+        agent = laya.load(_MODEL_NAME)
+        with _load_lock:
+            _agent = agent
+            _load_error = None
     except Exception as exc:
-        _load_error = f"{type(exc).__name__}: {exc}"
-        raise
+        with _load_lock:
+            _load_error = f"{type(exc).__name__}: {exc}"
+    finally:
+        with _load_lock:
+            _loading = False
+            _load_finished_at = time.time()
+        _load_event.set()
+
+
+def start_loading() -> None:
+    """Start loading Laya in a daemon thread exactly once."""
+    global _loading, _load_started_at
+    with _load_lock:
+        if _agent is not None or _loading or _load_error is not None:
+            return
+        _loading = True
+        _load_started_at = time.time()
+        _load_event.clear()
+        thread = threading.Thread(target=_load_worker, name="laya-loader", daemon=True)
+        thread.start()
+
+
+def model_status() -> dict[str, Any]:
+    with _load_lock:
+        if _agent is not None:
+            status = "ready"
+        elif _load_error is not None:
+            status = "error"
+        elif _loading:
+            status = "loading"
+        else:
+            status = "not_started"
+
+        elapsed = None
+        if _load_started_at is not None:
+            end = _load_finished_at if _load_finished_at is not None else time.time()
+            elapsed = round(max(0.0, end - _load_started_at), 1)
+
+        return {
+            "status": status,
+            "model": _MODEL_NAME,
+            "error": _load_error,
+            "elapsed_seconds": elapsed,
+        }
 
 
 def _candidate_features(board: list[list[str]], side: str, move: engine.Move) -> dict[str, Any]:
@@ -59,6 +109,26 @@ def _fallback_score(features: dict[str, Any]) -> float:
         + features["own_future_mobility"] * 1.5
         + features["center_value"] * 0.5
     )
+
+
+def _fallback_move(
+    moves: list[engine.Move],
+    features: dict[str, dict[str, Any]],
+    reason: str,
+    source: str = "fallback_loading",
+) -> tuple[engine.Move, dict]:
+    best = max(moves, key=lambda m: _fallback_score(features[m.id]))
+    return best, {
+        "source": source,
+        "model": _MODEL_NAME,
+        "selected": best.id,
+        "notation": engine.move_notation(best),
+        "confidence": None,
+        "probabilities": {},
+        "features": features,
+        "error": reason,
+        "laya_status": model_status(),
+    }
 
 
 def choose_move(board: list[list[str]], side: str, moves: list[engine.Move]) -> tuple[engine.Move, dict]:
@@ -105,8 +175,32 @@ def choose_move(board: list[list[str]], side: str, moves: list[engine.Move]) -> 
         }
     }
 
+    # Never freeze the game just because the first model download/load is slow.
+    start_loading()
+    if _agent is None:
+        _load_event.wait(timeout=_LOAD_WAIT_SECONDS)
+
+    with _load_lock:
+        agent = _agent
+        load_error = _load_error
+        still_loading = _loading
+
+    if agent is None:
+        if load_error:
+            return _fallback_move(
+                moves,
+                features,
+                f"Laya konnte nicht geladen werden: {load_error}",
+                source="fallback_error",
+            )
+        return _fallback_move(
+            moves,
+            features,
+            "Laya wird noch im Hintergrund geladen. Dieser Zug nutzt vorübergehend den Fallback.",
+            source="fallback_loading" if still_loading else "fallback",
+        )
+
     try:
-        agent = _load_agent()
         result = agent.predict(state, questions)
         answer = result["answers"]["move"]
         selected = answer.get("choice")
@@ -122,19 +216,16 @@ def choose_move(board: list[list[str]], side: str, moves: list[engine.Move]) -> 
             "confidence": answer.get("confidence"),
             "probabilities": answer.get("probabilities", {}),
             "features": features,
+            "laya_status": model_status(),
         }
         return by_id[selected], debug
 
     except Exception as exc:
-        best = max(moves, key=lambda m: _fallback_score(features[m.id]))
-        return best, {
-            "source": "fallback",
-            "model": _MODEL_NAME,
-            "selected": best.id,
-            "notation": engine.move_notation(best),
-            "confidence": None,
-            "probabilities": {},
-            "features": features,
-            "error": f"{type(exc).__name__}: {exc}",
-            "trace": traceback.format_exc(limit=2),
-        }
+        best, debug = _fallback_move(
+            moves,
+            features,
+            f"{type(exc).__name__}: {exc}",
+            source="fallback_error",
+        )
+        debug["trace"] = traceback.format_exc(limit=2)
+        return best, debug
