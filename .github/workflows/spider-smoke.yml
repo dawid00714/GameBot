@@ -16,4 +16,4 @@ jobs:
       - name: Compile Spider agent modules
         shell: pwsh
         run: |
-          python -m py_compile spider_windows.py spider_state.py spider_solver.py spider_learning.py spider_models.py spider_agent.py spider_app.py
+          python -m py_compile SpiderBot/spider_windows.py SpiderBot/spider_state.py SpiderBot/spider_solver.py SpiderBot/spider_learning.py SpiderBot/spider_models.py SpiderBot/spider_agent.py SpiderBot/spider_app.py
