@@ -131,13 +131,22 @@ class SpiderAgent:
         frame = ctl.capture()
         info = ctl.info
 
-        self._set_phase("read_state", "Karten mit UIA/OCR lesen")
+        vision_primary = bool(
+            use_vision and self.config.vision_enabled and self.config.vision_model
+        )
+        self._set_phase(
+            "read_state",
+            "Karten mit UIA lesen; Ollama übernimmt Vision"
+            if vision_primary
+            else "Karten mit UIA/OCR lesen",
+        )
         state = read_state(
             ctl.hwnd,
             frame,
             info.left,
             info.top,
             stock_point=(self.config.stock_x, self.config.stock_y),
+            use_ocr=not vision_primary,
         )
         if state.stock_point is not None:
             self.config.stock_x = float(state.stock_point[0])
@@ -149,15 +158,53 @@ class SpiderAgent:
                 try:
                     self._set_phase(
                         "ollama_vision",
-                        f"Ollama {self.config.vision_model} analysiert das Bild",
+                        f"Ollama {self.config.vision_model} liest die Karten",
                     )
                     hint = spider_ollama.analyze_spider(frame, self.config.vision_model)
                     self.last_vision = spider_ollama.apply_hint(state, hint)
+
+                    visible_cards = sum(len(c.cards) for c in state.columns)
+                    applied = len(self.last_vision.get("applied_columns") or [])
+                    confidence = float(self.last_vision.get("confidence") or 0.0)
+
+                    # If the VLM result is clearly incomplete, fall back to OCR
+                    # once for this observation. In the normal successful path
+                    # RapidOCR is never initialized/run at all.
+                    if visible_cards < 5 or confidence < 0.55:
+                        self._set_phase(
+                            "ocr_fallback",
+                            "Ollama unsicher – einmaliger OCR-Fallback",
+                        )
+                        fallback = read_state(
+                            ctl.hwnd,
+                            frame,
+                            info.left,
+                            info.top,
+                            stock_point=(self.config.stock_x, self.config.stock_y),
+                            use_ocr=True,
+                        )
+                        fallback.diagnostics.append(
+                            f"Ollama war unvollständig (confidence={confidence:.2f}, "
+                            f"angewendete Spalten={applied}); OCR-Fallback verwendet."
+                        )
+                        state = fallback
                 except Exception as exc:
                     self.last_vision = {
                         "model": self.config.vision_model,
                         "error": f"{type(exc).__name__}: {exc}",
                     }
+                    self._set_phase(
+                        "ocr_fallback",
+                        "Ollama-Fehler – OCR-Fallback",
+                    )
+                    state = read_state(
+                        ctl.hwnd,
+                        frame,
+                        info.left,
+                        info.top,
+                        stock_point=(self.config.stock_x, self.config.stock_y),
+                        use_ocr=True,
+                    )
                     state.diagnostics.append(
                         "Ollama Vision-Fehler: " + self.last_vision["error"]
                     )
