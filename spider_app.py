@@ -330,7 +330,7 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
       <h2>3 · Virtuelle Maus / Stock</h2>
       <div class="grid3">
         <div><label>Stock X</label><input id="stockX" type="number" min="0" max="1" step="0.001" value="0.820" style="width:100%"></div>
-        <div><label>Stock Y</label><input id="stockY" type="number" min="0" max="1" step="0.001" value="0.740" style="width:100%"></div>
+        <div><label>Stock Y</label><input id="stockY" type="number" min="0" max="1" step="0.001" value="0.780" style="width:100%"></div>
         <div><label>Wartezeit pro Aktion</label><select id="delay"><option value=".45">0,45 s</option><option value=".85" selected>0,85 s</option><option value="1.2">1,2 s</option><option value="1.8">1,8 s</option></select></div>
       </div>
       <div class="small muted" style="margin-top:8px">Die markierte Stelle aus deinem Screenshot ist als Ausgangspunkt voreingestellt. Für exakte Kalibrierung direkt auf den Kartenstapel im Live-Bild klicken.</div>
