@@ -168,13 +168,6 @@ def validate_typesafe() -> dict[str, Any]:
         key = _typesafe_key
     if not key:
         raise SpiderModelError("TypeSafe API-Key fehlt.")
-    with _typesafe_lock:
-        validated = _typesafe_validated
-    if not validated:
-        raise SpiderModelError(
-            "TypeSafe API-Key wurde noch nicht erfolgreich geprüft. "
-            "Bitte zuerst 'API verbinden' drücken."
-        )
 
     try:
         from typesafe_sdk import TypeSafeClient
@@ -332,8 +325,14 @@ def choose_laya(state: SpiderState, actions: list[SpiderAction], depth: int) -> 
 def choose_typesafe(state: SpiderState, actions: list[SpiderAction], depth: int) -> tuple[SpiderAction, dict[str, Any]]:
     with _typesafe_lock:
         key = _typesafe_key
+        validated = _typesafe_validated
     if not key:
         raise SpiderModelError("TypeSafe API-Key fehlt.")
+    if not validated:
+        raise SpiderModelError(
+            "TypeSafe API-Key wurde noch nicht erfolgreich geprüft. "
+            "Bitte zuerst 'API verbinden' drücken."
+        )
 
     try:
         from typesafe_sdk import Choice, TypeSafeClient
