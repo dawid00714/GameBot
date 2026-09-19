@@ -23,7 +23,7 @@ class SpiderConfig:
     model: str = "laya"
     depth: int = 3
     stock_x: float = 0.82
-    stock_y: float = 0.74
+    stock_y: float = 0.78
     learning: bool = True
     action_delay: float = 0.85
 
