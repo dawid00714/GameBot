@@ -12,7 +12,7 @@ import spider_models
 from spider_agent import SpiderAgent, SpiderAgentError
 from spider_windows import WindowAutomationError, list_windows
 
-app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="3.2.0")
+app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="3.3.0")
 agent = SpiderAgent()
 agent_lock = threading.Lock()
 run_stop = threading.Event()
@@ -39,7 +39,6 @@ class ConfigRequest(BaseModel):
     depth: int = Field(default=3, ge=1, le=5)
     learning: bool = True
     action_delay: float = Field(default=0.85, ge=0.15, le=5.0)
-    input_mode: str = "auto"
 
 
 class StockPointRequest(BaseModel):
@@ -110,7 +109,7 @@ def index():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "version": "3.2.0", "windows_agent": True}
+    return {"ok": True, "version": "3.3.0", "windows_agent": True}
 
 
 @app.get("/api/windows")
@@ -142,7 +141,6 @@ def configure(req: ConfigRequest):
                 depth=req.depth,
                 learning=req.learning,
                 action_delay=req.action_delay,
-                input_mode=req.input_mode,
             )
             return agent.status()
     except Exception as exc:
@@ -275,9 +273,9 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
 <header>
   <div>
     <h1><span class="pink">Laya</span> / <span class="cyan">TypeSafe Jev</span> · Windows Spider Agent</h1>
-    <div class="muted">Eigene virtuelle Maus · Drag mit gedrückter linker Taste · Live-Screenshot · selbstlernende Strategie</div>
+    <div class="muted">Nur Hintergrund-Eingabe · echte Maus bleibt unberührt · kein Fokuswechsel · Live-Screenshot</div>
   </div>
-  <div class="small muted">Build 3.2</div>
+  <div class="small muted">Build 3.3</div>
 </header>
 
 <main>
@@ -329,19 +327,16 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
     </section>
 
     <section class="card panel">
-      <h2>3 · Maus / Stock</h2>
+      <h2>3 · Virtuelle Hintergrundmaus / Stock</h2>
       <div class="grid2">
         <div><label>Wartezeit pro Aktion</label><select id="delay"><option value=".45">0,45 s</option><option value=".85" selected>0,85 s</option><option value="1.2">1,2 s</option><option value="1.8">1,8 s</option></select></div>
-        <div><label>Mausmodus</label>
-          <select id="inputMode">
-            <option value="auto" selected>Auto – zuverlässig</option>
-            <option value="background">Nur Hintergrundmaus</option>
-            <option value="system">Nur Windows-Systemmaus</option>
-          </select>
+        <div>
+          <label>Eingabemodus</label>
+          <div class="badge ok" style="margin-top:7px">BACKGROUND ONLY · echte Maus: AUS</div>
         </div>
       </div>
       <div id="stockStatus" class="small muted" style="margin-top:8px">Stock wird automatisch gesucht…</div>
-      <div class="small muted" style="margin-top:5px">Keine manuelle Stock-Kalibrierung mehr: der violette Kartenstapel wird im Spielfenster automatisch gesucht. „Auto“ verwendet zuerst Hintergrund-Eingabe und bei Bedarf den zuverlässigen Windows-Maus-Fallback.</div>
+      <div class="small muted" style="margin-top:5px">SpiderBot darf die echte Windows-Maus nicht bewegen und das Spielfenster nicht nach vorne holen. Es sendet ausschließlich Hintergrund-WM_MOUSE-Nachrichten an das ausgewählte Spiel bzw. dessen passendes Child-Fenster.</div>
     </section>
 
     <section class="card panel">
@@ -418,8 +413,7 @@ async function saveConfig(){
     model:$('model').value,
     depth:parseInt($('depth').value,10),
     learning:$('learning').checked,
-    action_delay:parseFloat($('delay').value),
-    input_mode:$('inputMode').value
+    action_delay:parseFloat($('delay').value)
   };
   await api('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
 }
@@ -506,6 +500,7 @@ async function refreshStatus(){
     if(d.state){
       const concise={
         reader:d.state.reader,
+        input_status:d.input_status,
         stock_available:d.state.stock_available,
         stock_point:d.state.stock_point,
         legal_actions_detected:d.legal_actions_detected,
@@ -521,7 +516,6 @@ async function refreshStatus(){
     $('actionDump').textContent=d.last_action?JSON.stringify(d.last_action,null,2):'Noch keine Aktion.';
     $('learningDump').textContent=JSON.stringify(d.learning,null,2);
 
-    if(d.config.input_mode) $('inputMode').value=d.config.input_mode;
     const sp=d.state?.stock_point;
     $('stockStatus').textContent=sp
       ? 'Stock automatisch erkannt: X '+Number(sp[0]).toFixed(3)+' · Y '+Number(sp[1]).toFixed(3)
@@ -550,7 +544,6 @@ $('retryLaya').addEventListener('click',retryLaya);
 $('model').addEventListener('change',saveConfig);
 $('depth').addEventListener('change',saveConfig);
 $('delay').addEventListener('change',saveConfig);
-$('inputMode').addEventListener('change',saveConfig);
 $('learning').addEventListener('change',saveConfig);
 
 refreshWindows();
