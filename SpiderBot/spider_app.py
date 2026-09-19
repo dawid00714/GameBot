@@ -13,7 +13,7 @@ import spider_ollama
 from spider_agent import SpiderAgent, SpiderAgentError
 from spider_windows import WindowAutomationError, list_windows
 
-app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="3.5.0")
+app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="3.6.0")
 agent = SpiderAgent()
 agent_lock = threading.Lock()
 run_stop = threading.Event()
@@ -23,8 +23,6 @@ runtime = {
     "last_loop_error": None,
     "steps": 0,
 }
-
-spider_models.start_laya()
 
 
 class WindowRequest(BaseModel):
@@ -112,7 +110,7 @@ def index():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "version": "3.5.0", "windows_agent": True}
+    return {"ok": True, "version": "3.6.0", "windows_agent": True}
 
 
 @app.get("/api/ollama/models")
@@ -155,7 +153,15 @@ def configure(req: ConfigRequest):
                 vision_enabled=req.vision_enabled,
                 vision_model=req.vision_model,
             )
-            return agent.status()
+            data = agent.status()
+
+        # Lazy-load Laya only when the user actually selects Laya. This avoids
+        # spending minutes reconstructing/loading a 322M checkpoint when the
+        # user wants TypeSafe/Jev instead.
+        if req.model.strip().lower() == "laya":
+            spider_models.start_laya()
+            data["laya"] = spider_models.laya_status()
+        return data
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"{type(exc).__name__}: {exc}")
 
@@ -312,7 +318,7 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
     <h1><span class="pink">Laya</span> / <span class="cyan">TypeSafe Jev</span> · Windows Spider Agent</h1>
     <div class="muted">Nur Hintergrund-Eingabe · echte Maus bleibt unberührt · kein Fokuswechsel · Live-Screenshot</div>
   </div>
-  <div class="small muted">Build 3.5</div>
+  <div class="small muted">Build 3.6</div>
 </header>
 
 <main>
@@ -587,7 +593,7 @@ async function refreshStatus(){
       tsLabel='<span class="warn">Key gespeichert, noch nicht geprüft</span>';
     }
     $('modelStatus').innerHTML=
-      'Laya: '+(ls.status==='ready'?'<span class="ok">bereit</span>':ls.status==='error'?'<span class="bad">Fehler</span>':'<span class="warn">'+ls.status+'</span>')+
+      'Laya: '+(ls.status==='ready'?'<span class="ok">bereit</span>':ls.status==='error'?'<span class="bad">Fehler</span>':ls.status==='loading'?'<span class="warn">lädt im Hintergrund</span>':'<span class="muted">nicht geladen</span>')+
       ' · TypeSafe: '+tsLabel;
 
     if(d.runtime.last_loop_error){
