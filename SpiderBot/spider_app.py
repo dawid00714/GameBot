@@ -14,7 +14,7 @@ from spider_agent import SpiderAgent, SpiderAgentError
 from spider_state import ocr_status, warm_ocr
 from spider_windows import WindowAutomationError, list_windows
 
-app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="4.5.0")
+app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="4.6.0")
 agent = SpiderAgent()
 agent_lock = threading.RLock()
 step_lock = threading.Lock()
@@ -130,7 +130,7 @@ def index():
 def health():
     return {
         "ok": True,
-        "version": "4.5.0",
+        "version": "4.6.0",
         "windows_agent": True,
         "ocr_fallback": ocr_status(),
     }
@@ -347,9 +347,9 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
 <header>
   <div>
     <h1><span class="pink">Laya</span> / <span class="cyan">TypeSafe Jev</span> · Windows Spider Agent</h1>
-    <div class="muted">Nur Hintergrund-Eingabe · echte Maus bleibt unberührt · kein Fokuswechsel · Live-Screenshot</div>
+    <div class="muted">Host: keine echte Maus · VM-Gast: echter Drag nur innerhalb der VM · Live-Screenshot</div>
   </div>
-  <div class="small muted">Build 4.5</div>
+  <div class="small muted">Build 4.6</div>
 </header>
 
 <main>
@@ -415,11 +415,11 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
         <div><label>Wartezeit pro Aktion</label><select id="delay"><option value=".45">0,45 s</option><option value=".85" selected>0,85 s</option><option value="1.2">1,2 s</option><option value="1.8">1,8 s</option></select></div>
         <div>
           <label>Eingabemodus</label>
-          <div class="badge ok" style="margin-top:7px">DRAG ONLY: DOWN → HALTEN+BEWEGEN → UP</div>
+          <div id="inputModeBadge" class="badge ok" style="margin-top:7px">Eingabemodus wird erkannt…</div>
         </div>
       </div>
       <div id="stockStatus" class="small muted" style="margin-top:8px">Stock wird automatisch gesucht…</div>
-      <div class="small muted" style="margin-top:5px">Kartenerkennung läuft standardmäßig über FastOCR. Für Kartenbewegungen verwendet SpiderBot jetzt nur noch den verlangten Drag: linke Taste auf der Quellkarte DOWN, während der gesamten Bewegung gedrückt halten, erst am Ziel UP. Keine UIA-Auswahl und keine Tastaturnavigation.</div>
+      <div class="small muted" style="margin-top:5px">Kartenerkennung läuft standardmäßig über FastOCR. Auf dem normalen Host werden keine echten Mausereignisse gesendet. Im VM-Gastmodus nutzt SpiderBot echten Windows-SendInput nur innerhalb der VM: Quellkarte anfahren → LEFTDOWN → während der gesamten Bewegung gedrückt halten → am Ziel LEFTUP.</div>
     </section>
 
     <section class="card panel">
@@ -628,6 +628,16 @@ async function refreshStatus(){
     $('readerBadge').textContent='Kartenleser: '+(d.state?.reader||(
       d.config.vision_enabled && d.config.vision_model ? 'Ollama '+d.config.vision_model : 'FastOCR'
     ));
+    const im=d.input_status?.mode||'unbekannt';
+    if(im==='vm_guest_real_drag'){
+      $('inputModeBadge').textContent='VM-GAST: ECHTER DRAG · Host-Maus bleibt frei';
+      $('inputModeBadge').className='badge ok';
+    }else if(im==='host_background_drag'){
+      $('inputModeBadge').textContent='HOST: Hintergrund-Messages · Solitaire kann sie blockieren';
+      $('inputModeBadge').className='badge warn';
+    }else{
+      $('inputModeBadge').textContent='Eingabemodus: '+im;
+    }
 
     const ls=d.laya;
     const ts=d.typesafe;
