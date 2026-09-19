@@ -13,7 +13,7 @@ import spider_ollama
 from spider_agent import SpiderAgent, SpiderAgentError
 from spider_windows import WindowAutomationError, list_windows
 
-app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="4.1.0")
+app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="4.2.0")
 agent = SpiderAgent()
 agent_lock = threading.RLock()
 step_lock = threading.Lock()
@@ -123,7 +123,7 @@ def index():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "version": "4.1.0", "windows_agent": True}
+    return {"ok": True, "version": "4.2.0", "windows_agent": True}
 
 
 @app.get("/api/ollama/models")
@@ -339,7 +339,7 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
     <h1><span class="pink">Laya</span> / <span class="cyan">TypeSafe Jev</span> · Windows Spider Agent</h1>
     <div class="muted">Nur Hintergrund-Eingabe · echte Maus bleibt unberührt · kein Fokuswechsel · Live-Screenshot</div>
   </div>
-  <div class="small muted">Build 4.1</div>
+  <div class="small muted">Build 4.2</div>
 </header>
 
 <main>
@@ -396,7 +396,7 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
         <select id="visionModel" style="flex:1"><option value="">Vision-Modelle laden…</option></select>
         <button id="refreshOllama">Ollama aktualisieren</button>
       </div>
-      <div id="ollamaStatus" class="small muted" style="margin-top:7px">Ollama ist der primäre Kartenleser. OCR wird nur noch bei einer unbrauchbaren Vision-Antwort verwendet.</div>
+      <div id="ollamaStatus" class="small muted" style="margin-top:7px">Schnellmodus: kleinstes lokales Vision-Modell wird bevorzugt; Denken ist deaktiviert. OCR nur Notfall-Fallback.</div>
     </section>
 
     <section class="card panel">
@@ -519,10 +519,17 @@ async function refreshOllama(){
     if(previous && [...sel.options].some(o=>o.value===previous)){
       sel.value=previous;
     }else{
-      // Prefer the user's small local Qwen-VL model when present, otherwise
-      // use the first installed vision model.
-      const preferred=[...sel.options].find(o=>/qwen.*vl.*2b/i.test(o.value));
-      if(preferred) sel.value=preferred.value;
+      // Prefer the smallest installed vision model for card reading. Spider
+      // needs rank recognition, not long-form visual reasoning.
+      const ranked=data.vision_models
+        .map(m=>{
+          const raw=String(m.parameter_size||'');
+          const n=parseFloat(raw.replace(',','.'));
+          const mult=/B/i.test(raw)?1000:/M/i.test(raw)?1:10000;
+          return {name:m.name, score:Number.isFinite(n)?n*mult:100000};
+        })
+        .sort((a,b)=>a.score-b.score);
+      if(ranked.length) sel.value=ranked[0].name;
     }
     $('visionEnabled').checked=true;
     $('ollamaStatus').innerHTML='<span class="ok">'+data.vision_models.length+' Vision-Modell(e) erkannt · Ollama übernimmt Kartenlesen.</span>';
