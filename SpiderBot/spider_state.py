@@ -387,6 +387,8 @@ def read_state(
     client_left: int,
     client_top: int,
     stock_point: tuple[float, float] = (0.82, 0.78),
+    *,
+    use_ocr: bool = True,
 ) -> SpiderState:
     height, width = frame.shape[:2]
     uia_cards, diag = _read_uia(hwnd, width, height, client_left, client_top)
@@ -394,11 +396,18 @@ def read_state(
     if len(uia_cards) >= 6:
         cards = uia_cards
         reader = "uia"
-    else:
+    elif use_ocr:
         ocr_cards, ocr_diag = _read_ocr(frame)
         diag.extend(ocr_diag)
         cards = ocr_cards if len(ocr_cards) > len(uia_cards) else uia_cards
         reader = "ocr" if cards is ocr_cards else "uia-partial"
+    else:
+        # Ollama/VLM mode: do not spend seconds running RapidOCR first.
+        # Keep any partial UIA observations; the vision model will fill/replace
+        # missing columns afterwards.
+        cards = uia_cards
+        reader = "uia-partial" if uia_cards else "vision-pending"
+        diag.append("OCR übersprungen: lokales Ollama-Vision-Modell übernimmt die Kartenerkennung.")
 
     cols = _group_cards(cards, width, height, frame)
 
