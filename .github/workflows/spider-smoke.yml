@@ -17,3 +17,8 @@ jobs:
         shell: pwsh
         run: |
           python -m py_compile SpiderBot/spider_windows.py SpiderBot/spider_state.py SpiderBot/spider_solver.py SpiderBot/spider_learning.py SpiderBot/spider_models.py SpiderBot/spider_ollama.py SpiderBot/spider_agent.py SpiderBot/spider_app.py
+      - name: Check embedded browser JavaScript
+        shell: pwsh
+        run: |
+          python -c "import re, pathlib; s=pathlib.Path('SpiderBot/spider_app.py').read_text(encoding='utf-8'); m=re.search(r'<script>(.*?)</script>', s, re.S); assert m, 'script block missing'; pathlib.Path('spider-ui.js').write_text(m.group(1), encoding='utf-8')"
+          node --check spider-ui.js
