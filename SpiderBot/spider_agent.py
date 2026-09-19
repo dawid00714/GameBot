@@ -43,6 +43,9 @@ class SpiderAgent:
         self.last_frame = None
         self.last_vision: dict[str, Any] | None = None
         self.last_action_count = 0
+        self.phase = "idle"
+        self.phase_detail = ""
+        self.phase_started_at = time.time()
         self.moves = 0
         self.running = False
         self.game_finished = False
@@ -53,6 +56,11 @@ class SpiderAgent:
         self.stock_failed_clicks = 0
         self._learning_committed = False
 
+    def _set_phase(self, phase: str, detail: str = "") -> None:
+        self.phase = phase
+        self.phase_detail = detail
+        self.phase_started_at = time.time()
+
     def select_window(self, hwnd: int) -> None:
         self.controller = WindowController(int(hwnd))
         self.config.hwnd = int(hwnd)
@@ -60,6 +68,7 @@ class SpiderAgent:
         self.last_state = None
         self.last_frame = None
         self.last_vision = None
+        self._set_phase("idle", "Fenster ausgewählt")
 
     def set_model(self, model: str) -> None:
         name = model.strip().lower()
@@ -109,16 +118,20 @@ class SpiderAgent:
         self.last_action = None
         self.last_error = None
         self._learning_committed = False
+        self._set_phase("idle", "Neue Partie")
 
     def _require_controller(self) -> WindowController:
         if self.controller is None:
             raise SpiderAgentError("Zuerst das Windows-Spiel-Fenster auswählen.")
         return self.controller
 
-    def observe(self) -> tuple[SpiderState, Any]:
+    def observe(self, use_vision: bool = True) -> tuple[SpiderState, Any]:
         ctl = self._require_controller()
+        self._set_phase("capture", "Spielfenster aufnehmen")
         frame = ctl.capture()
         info = ctl.info
+
+        self._set_phase("read_state", "Karten mit UIA/OCR lesen")
         state = read_state(
             ctl.hwnd,
             frame,
@@ -130,22 +143,28 @@ class SpiderAgent:
             self.config.stock_x = float(state.stock_point[0])
             self.config.stock_y = float(state.stock_point[1])
 
-        self.last_vision = None
-        if self.config.vision_enabled and self.config.vision_model:
-            try:
-                hint = spider_ollama.analyze_spider(frame, self.config.vision_model)
-                self.last_vision = spider_ollama.apply_hint(state, hint)
-            except Exception as exc:
-                self.last_vision = {
-                    "model": self.config.vision_model,
-                    "error": f"{type(exc).__name__}: {exc}",
-                }
-                state.diagnostics.append(
-                    "Ollama Vision-Fehler: " + self.last_vision["error"]
-                )
+        if use_vision:
+            self.last_vision = None
+            if self.config.vision_enabled and self.config.vision_model:
+                try:
+                    self._set_phase(
+                        "ollama_vision",
+                        f"Ollama {self.config.vision_model} analysiert das Bild",
+                    )
+                    hint = spider_ollama.analyze_spider(frame, self.config.vision_model)
+                    self.last_vision = spider_ollama.apply_hint(state, hint)
+                except Exception as exc:
+                    self.last_vision = {
+                        "model": self.config.vision_model,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                    state.diagnostics.append(
+                        "Ollama Vision-Fehler: " + self.last_vision["error"]
+                    )
 
         self.last_state = state
         self.last_frame = frame
+        self._set_phase("observed", "Spielzustand gelesen")
         return state, frame
 
     def _healthy_state(self, state: SpiderState) -> bool:
@@ -241,7 +260,8 @@ class SpiderAgent:
 
     def step(self) -> dict[str, Any]:
         self.last_error = None
-        state, before = self.observe()
+        self._set_phase("observe", "Spielzustand erfassen")
+        state, before = self.observe(use_vision=True)
 
         if not self._healthy_state(state):
             raise SpiderAgentError(
@@ -255,6 +275,7 @@ class SpiderAgent:
             self.game_won = True
             return self.status()
 
+        self._set_phase("lookahead", f"Legale Züge + Vorausschau Tiefe {self.config.depth}")
         actions = add_lookahead(
             state,
             generate_actions(state),
@@ -302,6 +323,10 @@ class SpiderAgent:
             raise SpiderAgentError("Keine Aktion aus der erkannten Stellung erzeugt.")
 
         try:
+            self._set_phase(
+                "decision",
+                "TypeSafe/Jev entscheidet" if self.config.model == "typesafe" else "Laya entscheidet",
+            )
             selected, model_debug = spider_models.choose(
                 self.config.model,
                 state,
@@ -311,6 +336,7 @@ class SpiderAgent:
         except spider_models.SpiderModelError as exc:
             raise SpiderAgentError(str(exc)) from exc
 
+        self._set_phase("input", f"Hintergrundaktion {selected.notation()}")
         changed, diff, after, input_used = self._execute(state, selected, before)
 
         if selected.kind == "deal":
@@ -322,6 +348,7 @@ class SpiderAgent:
 
         if not changed:
             self.failed_actions.setdefault(sig, set()).add(selected.notation())
+            self._set_phase("input_rejected", "Spiel hat Hintergrundaktion nicht angenommen")
             self.last_action = {
                 "model": self.config.model,
                 "action": selected.to_dict(),
@@ -363,10 +390,12 @@ class SpiderAgent:
         }
 
         # Re-observe after the animation has settled so the web UI shows the
-        # actual game state, not our simulated state.
+        # actual game state. Do NOT run the local VLM a second time for the same
+        # move; that previously doubled per-move latency.
         time.sleep(0.15)
         try:
-            next_state, _ = self.observe()
+            self._set_phase("verify", "Zug im echten Fenster verifizieren")
+            next_state, _ = self.observe(use_vision=False)
             if self._is_win(next_state):
                 self.game_finished = True
                 self.game_won = True
@@ -374,6 +403,7 @@ class SpiderAgent:
         except Exception:
             pass
 
+        self._set_phase("idle", "Bereit für nächsten Zug")
         return self.status()
 
     def _finish_learning(self, won: bool) -> None:
@@ -415,6 +445,9 @@ class SpiderAgent:
             "game_finished": self.game_finished,
             "game_won": self.game_won,
             "last_error": self.last_error,
+            "phase": self.phase,
+            "phase_detail": self.phase_detail,
+            "phase_elapsed_seconds": round(max(0.0, time.time() - self.phase_started_at), 1),
             "last_action": self.last_action,
             "last_vision": self.last_vision,
             "state": self.last_state.to_dict() if self.last_state else None,
