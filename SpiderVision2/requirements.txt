@@ -1,0 +1,7 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+numpy>=1.26
+opencv-python>=4.10
+mss>=9.0
+pywin32>=306
+Pillow>=10.4
