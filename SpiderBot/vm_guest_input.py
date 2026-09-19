@@ -5,6 +5,7 @@ import json
 import math
 import os
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -59,8 +60,27 @@ def detect_virtual_machine() -> dict[str, Any]:
     }
 
 
+_abort_input = threading.Event()
+
+
 def guest_real_input_enabled() -> bool:
     return os.getenv("SPIDER_VM_GUEST", "").strip() == "1"
+
+
+def host_real_input_enabled() -> bool:
+    return os.getenv("SPIDER_REAL_MOUSE", "").strip() == "1"
+
+
+def real_mouse_input_enabled() -> bool:
+    return guest_real_input_enabled() or host_real_input_enabled()
+
+
+def request_input_abort() -> None:
+    _abort_input.set()
+
+
+def clear_input_abort() -> None:
+    _abort_input.clear()
 
 
 def require_guest_vm() -> dict[str, Any]:
@@ -153,18 +173,93 @@ def _send_mouse(x: int, y: int, flags: int) -> None:
         raise GuestInputError(f"SendInput fehlgeschlagen (winerr={err}).")
 
 
-def real_guest_click(screen_x: int, screen_y: int, hold_ms: int = 100) -> dict[str, Any]:
-    vm = require_guest_vm()
+def _real_input_context() -> dict[str, Any]:
+    if guest_real_input_enabled():
+        vm = require_guest_vm()
+        return {"scope": "vm_guest", "virtual_machine": vm}
+    if host_real_input_enabled():
+        return {"scope": "host_real_mouse", "virtual_machine": None}
+    raise GuestInputError(
+        "Echte Maussteuerung ist nicht aktiviert. "
+        "Starte SpiderBot ueber start.bat oder setze SPIDER_REAL_MOUSE=1."
+    )
+
+
+def real_mouse_click(screen_x: int, screen_y: int, hold_ms: int = 100) -> dict[str, Any]:
+    ctx = _real_input_context()
+    clear_input_abort()
     _send_mouse(screen_x, screen_y, MOUSEEVENTF_MOVE)
     time.sleep(0.035)
+    if _abort_input.is_set():
+        return {"ok": False, "aborted": True, "mode": ctx["scope"]}
     _send_mouse(screen_x, screen_y, MOUSEEVENTF_LEFTDOWN)
-    time.sleep(max(0.03, hold_ms / 1000.0))
-    _send_mouse(screen_x, screen_y, MOUSEEVENTF_LEFTUP)
+    try:
+        deadline = time.time() + max(0.03, hold_ms / 1000.0)
+        while time.time() < deadline:
+            if _abort_input.is_set():
+                break
+            time.sleep(0.01)
+    finally:
+        _send_mouse(screen_x, screen_y, MOUSEEVENTF_LEFTUP)
     return {
-        "ok": True,
-        "mode": "vm_guest_sendinput_click",
-        "virtual_machine": vm,
+        "ok": not _abort_input.is_set(),
+        "aborted": _abort_input.is_set(),
+        "mode": "real_sendinput_click",
+        "scope": ctx["scope"],
+        "virtual_machine": ctx["virtual_machine"],
     }
+
+
+def real_mouse_drag(
+    start_screen: tuple[int, int],
+    end_screen: tuple[int, int],
+    duration_ms: int = 850,
+    steps: int = 52,
+) -> dict[str, Any]:
+    ctx = _real_input_context()
+    clear_input_abort()
+    sx, sy = map(int, start_screen)
+    ex, ey = map(int, end_screen)
+    steps = max(16, int(steps))
+    delay = max(0.004, duration_ms / 1000.0 / steps)
+
+    _send_mouse(sx, sy, MOUSEEVENTF_MOVE)
+    time.sleep(0.05)
+    if _abort_input.is_set():
+        return {"ok": False, "aborted": True, "mode": "real_sendinput_drag"}
+
+    _send_mouse(sx, sy, MOUSEEVENTF_LEFTDOWN)
+    time.sleep(max(0.06, delay * 2))
+    last_x, last_y = sx, sy
+
+    try:
+        for i in range(1, steps + 1):
+            if _abort_input.is_set():
+                break
+            t = i / steps
+            u = t * t * (3.0 - 2.0 * t)
+            last_x = int(round(sx + (ex - sx) * u))
+            last_y = int(round(sy + (ey - sy) * u))
+            _send_mouse(last_x, last_y, MOUSEEVENTF_MOVE)
+            time.sleep(delay)
+    finally:
+        # Alt+L stop can interrupt the drag. Always release immediately.
+        _send_mouse(last_x, last_y, MOUSEEVENTF_LEFTUP)
+
+    return {
+        "ok": not _abort_input.is_set(),
+        "aborted": _abort_input.is_set(),
+        "mode": "real_sendinput_drag",
+        "scope": ctx["scope"],
+        "sequence": "MOVE -> LEFTDOWN -> MOVE*N -> LEFTUP",
+        "steps": steps,
+        "duration_ms": duration_ms,
+        "virtual_machine": ctx["virtual_machine"],
+    }
+
+
+def real_guest_click(screen_x: int, screen_y: int, hold_ms: int = 100) -> dict[str, Any]:
+    return real_mouse_click(screen_x, screen_y, hold_ms=hold_ms)
 
 
 def real_guest_drag(
@@ -173,43 +268,9 @@ def real_guest_drag(
     duration_ms: int = 850,
     steps: int = 52,
 ) -> dict[str, Any]:
-    """Real Windows drag, but permitted only inside a detected VM guest.
-
-    Exact gesture:
-      MOVE(source)
-      LEFTDOWN
-      MOVE(... while button remains down ...)
-      LEFTUP(destination)
-    """
-    vm = require_guest_vm()
-    sx, sy = map(int, start_screen)
-    ex, ey = map(int, end_screen)
-    steps = max(16, int(steps))
-    delay = max(0.004, duration_ms / 1000.0 / steps)
-
-    _send_mouse(sx, sy, MOUSEEVENTF_MOVE)
-    time.sleep(0.05)
-    _send_mouse(sx, sy, MOUSEEVENTF_LEFTDOWN)
-    time.sleep(max(0.06, delay * 2))
-
-    try:
-        for i in range(1, steps + 1):
-            t = i / steps
-            u = t * t * (3.0 - 2.0 * t)
-            x = int(round(sx + (ex - sx) * u))
-            y = int(round(sy + (ey - sy) * u))
-            # A SendInput MOVE does not release the previously pressed button;
-            # LEFTDOWN remains logically held until the explicit LEFTUP below.
-            _send_mouse(x, y, MOUSEEVENTF_MOVE)
-            time.sleep(delay)
-    finally:
-        _send_mouse(ex, ey, MOUSEEVENTF_LEFTUP)
-
-    return {
-        "ok": True,
-        "mode": "vm_guest_sendinput_drag",
-        "sequence": "MOVE -> LEFTDOWN -> MOVE*N -> LEFTUP",
-        "steps": steps,
-        "duration_ms": duration_ms,
-        "virtual_machine": vm,
-    }
+    return real_mouse_drag(
+        start_screen,
+        end_screen,
+        duration_ms=duration_ms,
+        steps=steps,
+    )
