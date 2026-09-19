@@ -13,7 +13,7 @@ import spider_ollama
 from spider_agent import SpiderAgent, SpiderAgentError
 from spider_windows import WindowAutomationError, list_windows
 
-app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="3.4.0")
+app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="3.5.0")
 agent = SpiderAgent()
 agent_lock = threading.Lock()
 run_stop = threading.Event()
@@ -112,7 +112,7 @@ def index():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "version": "3.4.0", "windows_agent": True}
+    return {"ok": True, "version": "3.5.0", "windows_agent": True}
 
 
 @app.get("/api/ollama/models")
@@ -169,13 +169,20 @@ def stock_point(req: StockPointRequest):
 
 @app.post("/api/typesafe/key")
 def typesafe_key(req: ApiKeyRequest):
-    with agent_lock:
-        agent.set_typesafe_key(req.api_key)
+    try:
+        with agent_lock:
+            agent.set_typesafe_key(req.api_key)
+            status = spider_models.validate_typesafe()
         return {
             "ok": True,
-            "typesafe": spider_models.typesafe_status(),
-            "message": "Key nur im RAM des lokalen Prozesses gespeichert.",
+            "typesafe": status,
+            "message": "TypeSafe API-Key geprüft und Verbindung erfolgreich.",
         }
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{type(exc).__name__}: {exc}",
+        )
 
 
 @app.post("/api/laya/retry")
@@ -212,6 +219,23 @@ def step():
 def run_start():
     if agent.controller is None:
         raise HTTPException(status_code=409, detail="Zuerst Spielfenster auswählen.")
+
+    if agent.config.model == "typesafe":
+        ts = spider_models.typesafe_status()
+        if not ts.get("validated"):
+            detail = ts.get("validation_error") or (
+                "TypeSafe API-Key wurde noch nicht erfolgreich geprüft. "
+                "Bitte zuerst 'API verbinden' drücken."
+            )
+            raise HTTPException(status_code=409, detail=detail)
+
+    if agent.config.vision_enabled and not agent.config.vision_model:
+        raise HTTPException(
+            status_code=409,
+            detail="Ollama-Vision ist aktiviert, aber kein Vision-Modell ausgewählt.",
+        )
+
+    runtime["last_loop_error"] = None
     _start_runner()
     return _status()
 
@@ -288,7 +312,7 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
     <h1><span class="pink">Laya</span> / <span class="cyan">TypeSafe Jev</span> · Windows Spider Agent</h1>
     <div class="muted">Nur Hintergrund-Eingabe · echte Maus bleibt unberührt · kein Fokuswechsel · Live-Screenshot</div>
   </div>
-  <div class="small muted">Build 3.4</div>
+  <div class="small muted">Build 3.5</div>
 </header>
 
 <main>
@@ -473,13 +497,25 @@ async function refreshOllama(){
   }
 }
 
-async function saveKey(){
+async async function saveKey(){
   try{
-    const data=await api('/api/typesafe/key',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({api_key:$('apiKey').value})});
+    const value=$('apiKey').value;
+    if(!value.trim()){
+      throw new Error('Bitte zuerst den TypeSafe API-Key einfügen.');
+    }
+    const data=await api('/api/typesafe/key',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({api_key:value})
+    });
     $('apiKey').value='';
-    $('modelStatus').textContent=data.message;
-    refreshStatus();
-  }catch(e){$('modelStatus').textContent=e.message}
+    $('error').textContent='';
+    $('modelStatus').innerHTML='<span class="ok">'+data.message+'</span>';
+    await refreshStatus();
+  }catch(e){
+    $('modelStatus').innerHTML='<span class="bad">'+esc(e.message)+'</span>';
+    $('error').textContent=e.message;
+  }
 }
 
 async function observe(){
@@ -502,11 +538,16 @@ async function oneStep(){
 
 async function start(){
   try{
-    await saveConfig();
-    await api('/api/run/start',{method:'POST'});
+    $('mainStatus').textContent='Agent wird gestartet…';
     $('error').textContent='';
-    refreshStatus();
-  }catch(e){$('error').textContent=e.message}
+    await saveConfig();
+    const data=await api('/api/run/start',{method:'POST'});
+    statusData=data;
+    await refreshStatus();
+  }catch(e){
+    $('error').textContent=e.message;
+    $('mainStatus').textContent='Start abgebrochen.';
+  }
 }
 
 async function stop(){
@@ -537,9 +578,17 @@ async function refreshStatus(){
 
     const ls=d.laya;
     const ts=d.typesafe;
+    let tsLabel='<span class="warn">kein Key</span>';
+    if(ts.validated){
+      tsLabel='<span class="ok">API geprüft & bereit</span>';
+    }else if(ts.configured && ts.validation_error){
+      tsLabel='<span class="bad">API-Fehler</span>';
+    }else if(ts.configured){
+      tsLabel='<span class="warn">Key gespeichert, noch nicht geprüft</span>';
+    }
     $('modelStatus').innerHTML=
       'Laya: '+(ls.status==='ready'?'<span class="ok">bereit</span>':ls.status==='error'?'<span class="bad">Fehler</span>':'<span class="warn">'+ls.status+'</span>')+
-      ' · TypeSafe: '+(ts.configured?'<span class="ok">API bereit</span>':'<span class="warn">kein Key</span>');
+      ' · TypeSafe: '+tsLabel;
 
     if(d.runtime.last_loop_error){
       $('error').textContent=d.runtime.last_loop_error;
