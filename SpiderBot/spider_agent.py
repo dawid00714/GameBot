@@ -422,8 +422,21 @@ class SpiderAgent:
         self.last_action_count = len(actions)
 
         sig = state_signature(state)
+        raw_actions = list(actions)
         banned = self.failed_actions.get(sig, set())
         actions = [a for a in actions if a.notation() not in banned]
+
+        # OCR/UIA state signatures can remain identical while input attempts fail.
+        # Do not permanently exhaust every legal move and then stop. Once every
+        # currently legal tableau move has been tried, clear only this state's
+        # temporary input blacklist and let the model choose again.
+        if not actions and raw_actions:
+            self.failed_actions.pop(sig, None)
+            actions = raw_actions
+            banned = set()
+            state.diagnostics.append(
+                "Alle temporär gesperrten Züge dieser Stellung wurden wieder freigegeben."
+            )
 
         if self.config.learning:
             for action in actions:
@@ -474,7 +487,16 @@ class SpiderAgent:
         except spider_models.SpiderModelError as exc:
             raise SpiderAgentError(str(exc)) from exc
 
-        self._set_phase("input", f"Mausfreie Aktion {selected.notation()}")
+        input_mode = self.controller.input_status().get("mode") if self.controller else None
+        if input_mode == "host_background_drag":
+            raise SpiderAgentError(
+                "Microsoft Solitaire läuft noch im HOST-Modus. Dort akzeptiert das Spiel "
+                "die isolierten Hintergrund-Mausnachrichten nicht zuverlässig. Für den "
+                "echten Drag ohne Übernahme deiner Host-Maus muss SpiderBot im VM-Gast "
+                "mit start_vm_guest.bat laufen."
+            )
+
+        self._set_phase("input", f"Maus-Drag {selected.notation()}")
         changed_pixels, diff, after, input_used, input_debug = self._execute(
             state,
             selected,
