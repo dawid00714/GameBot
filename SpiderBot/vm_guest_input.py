@@ -83,6 +83,10 @@ def clear_input_abort() -> None:
     _abort_input.clear()
 
 
+def input_abort_requested() -> bool:
+    return _abort_input.is_set()
+
+
 def require_guest_vm() -> dict[str, Any]:
     if not guest_real_input_enabled():
         raise GuestInputError(
@@ -187,7 +191,6 @@ def _real_input_context() -> dict[str, Any]:
 
 def real_mouse_click(screen_x: int, screen_y: int, hold_ms: int = 100) -> dict[str, Any]:
     ctx = _real_input_context()
-    clear_input_abort()
     _send_mouse(screen_x, screen_y, MOUSEEVENTF_MOVE)
     time.sleep(0.035)
     if _abort_input.is_set():
@@ -217,7 +220,6 @@ def real_mouse_drag(
     steps: int = 52,
 ) -> dict[str, Any]:
     ctx = _real_input_context()
-    clear_input_abort()
     sx, sy = map(int, start_screen)
     ex, ey = map(int, end_screen)
     steps = max(16, int(steps))
