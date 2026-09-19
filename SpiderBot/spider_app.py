@@ -14,7 +14,7 @@ from spider_agent import SpiderAgent, SpiderAgentError
 from spider_state import ocr_status, warm_ocr
 from spider_windows import WindowAutomationError, list_windows
 
-app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="4.2.0")
+app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="4.3.0")
 agent = SpiderAgent()
 agent_lock = threading.RLock()
 step_lock = threading.Lock()
@@ -130,7 +130,7 @@ def index():
 def health():
     return {
         "ok": True,
-        "version": "4.2.0",
+        "version": "4.3.0",
         "windows_agent": True,
         "ocr_fallback": ocr_status(),
     }
@@ -349,7 +349,7 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
     <h1><span class="pink">Laya</span> / <span class="cyan">TypeSafe Jev</span> · Windows Spider Agent</h1>
     <div class="muted">Nur Hintergrund-Eingabe · echte Maus bleibt unberührt · kein Fokuswechsel · Live-Screenshot</div>
   </div>
-  <div class="small muted">Build 4.2</div>
+  <div class="small muted">Build 4.3</div>
 </header>
 
 <main>
@@ -681,10 +681,13 @@ async function refreshStatus(){
       $('visionModel').value=d.config.vision_model;
     }
     if(d.last_vision){
+      const timing=d.last_vision.timing||{};
       $('ollamaStatus').textContent=d.last_vision.error
         ? 'Ollama Vision Fehler: '+d.last_vision.error
-        : 'Ollama Vision: '+d.last_vision.model+' · Confidence '+Number(d.last_vision.confidence||0).toFixed(2)+
-          ' · angewendet: '+JSON.stringify(d.last_vision.applied_columns||[]);
+        : 'Ollama Vision: '+d.last_vision.model+
+          ' · '+Number(timing.total_ms||0).toFixed(0)+' ms'+
+          ' · Confidence '+Number(d.last_vision.confidence||0).toFixed(2)+
+          ' · Spalten: '+JSON.stringify(d.last_vision.applied_columns||[]);
     }
 
     const sp=d.state?.stock_point;
