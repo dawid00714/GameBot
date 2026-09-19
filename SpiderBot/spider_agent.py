@@ -394,6 +394,18 @@ class SpiderAgent:
             for action in actions:
                 self.learning.enrich(self.config.model, sig, action)
 
+        # Search first, model second: do not present dozens of weak legal moves
+        # to Laya/Jev. Restrict the chooser to the strongest plausible options.
+        if len(actions) > 8:
+            actions = sorted(
+                actions,
+                key=lambda a: (a.total_score, a.lookahead_score, a.immediate_score),
+                reverse=True,
+            )[:8]
+            state.diagnostics.append(
+                "Strategie-Filter: nur die 8 besten legalen Kandidaten an das Modell gegeben."
+            )
+
         # The purple-stock color detector is only a hint. The user explicitly
         # calibrates the stock position, and a Spider deal contains at most five
         # stock clicks. If no tableau move exists, probe the calibrated stock
