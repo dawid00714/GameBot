@@ -97,3 +97,9 @@ Screenshot
 ```
 
 UIA bleibt bei vollständigen Accessibility-Daten die primäre Quelle. Ollama soll fehlende/unsichere Bildinformationen ergänzen, nicht zuverlässige Kartendaten blind überschreiben.
+
+
+## TypeSafe-Verbindungstest
+
+Ab Build 3.5 gilt **API bereit** erst nach einem echten Test gegen `GET /v1/models`.
+Der API-Key wird beim Einfügen normalisiert (z. B. ein versehentlich mitkopiertes `Bearer ` oder äußere Anführungszeichen) und auf ungültige Nicht-ASCII-/Steuerzeichen geprüft. So schlägt die Partie nicht erst beim ersten Zug mit einem unklaren `UnicodeEncodeError` fehl.
