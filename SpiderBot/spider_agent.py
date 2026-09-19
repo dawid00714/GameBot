@@ -131,22 +131,17 @@ class SpiderAgent:
         frame = ctl.capture()
         info = ctl.info
 
-        vision_primary = bool(
+        vision_requested = bool(
             use_vision and self.config.vision_enabled and self.config.vision_model
         )
-        self._set_phase(
-            "read_state",
-            "Karten mit UIA lesen; Ollama übernimmt Vision"
-            if vision_primary
-            else "Karten mit FastOCR lesen",
-        )
+        self._set_phase("read_state", "Karten mit UIA/FastOCR lesen")
         state = read_state(
             ctl.hwnd,
             frame,
             info.left,
             info.top,
             stock_point=(self.config.stock_x, self.config.stock_y),
-            use_ocr=not vision_primary,
+            use_ocr=True,
         )
         if state.stock_point is not None:
             self.config.stock_x = float(state.stock_point[0])
@@ -154,61 +149,50 @@ class SpiderAgent:
 
         if use_vision:
             self.last_vision = None
-            if self.config.vision_enabled and self.config.vision_model:
-                try:
-                    self._set_phase(
-                        "ollama_vision",
-                        f"Ollama {self.config.vision_model} liest die Karten",
-                    )
-                    hint = spider_ollama.analyze_spider(frame, self.config.vision_model)
-                    self.last_vision = spider_ollama.apply_hint(state, hint)
+            if vision_requested:
+                visible_cards = sum(len(c.cards) for c in state.columns)
+                occupied_cols = sum(1 for c in state.columns if c.cards)
 
-                    visible_cards = sum(len(c.cards) for c in state.columns)
-                    applied = len(self.last_vision.get("applied_columns") or [])
-                    confidence = float(self.last_vision.get("confidence") or 0.0)
-                    raw_columns = len((self.last_vision.get("raw") or {}).get("columns") or [])
+                # UI Automation is authoritative and already gives exact card
+                # geometry. Do not waste 20-40 seconds asking a VLM to reread it.
+                # FastOCR also skips Ollama when it has a clearly usable board.
+                vision_needed = not (
+                    state.reader == "uia"
+                    or (visible_cards >= 8 and occupied_cols >= 7)
+                )
 
-                    # Ollama is the PRIMARY reader. OCR is used only when the
-                    # VLM response is structurally unusable, not merely because
-                    # the model reports a cautious confidence score.
-                    if visible_cards < 5 or raw_columns < 8:
-                        self._set_phase(
-                            "ocr_fallback",
-                            "Ollama unsicher – einmaliger OCR-Fallback",
-                        )
-                        fallback = read_state(
-                            ctl.hwnd,
-                            frame,
-                            info.left,
-                            info.top,
-                            stock_point=(self.config.stock_x, self.config.stock_y),
-                            use_ocr=True,
-                        )
-                        fallback.diagnostics.append(
-                            f"Ollama war unvollständig (confidence={confidence:.2f}, "
-                            f"Spalten={raw_columns}, angewendet={applied}); OCR-Fallback verwendet."
-                        )
-                        state = fallback
-                except Exception as exc:
+                if not vision_needed:
                     self.last_vision = {
                         "model": self.config.vision_model,
-                        "error": f"{type(exc).__name__}: {exc}",
+                        "skipped": True,
+                        "reason": (
+                            f"{state.reader} bereits ausreichend: "
+                            f"{visible_cards} Karten in {occupied_cols} Spalten"
+                        ),
                     }
-                    self._set_phase(
-                        "ocr_fallback",
-                        "Ollama-Fehler – OCR-Fallback",
-                    )
-                    state = read_state(
-                        ctl.hwnd,
-                        frame,
-                        info.left,
-                        info.top,
-                        stock_point=(self.config.stock_x, self.config.stock_y),
-                        use_ocr=True,
-                    )
                     state.diagnostics.append(
-                        "Ollama Vision-Fehler: " + self.last_vision["error"]
+                        "Ollama übersprungen: UIA/FastOCR hat die Stellung bereits ausreichend gelesen."
                     )
+                else:
+                    try:
+                        self._set_phase(
+                            "ollama_vision",
+                            f"Ollama {self.config.vision_model} hilft bei unsicheren Rängen",
+                        )
+                        hint = spider_ollama.analyze_spider(frame, self.config.vision_model)
+                        self.last_vision = spider_ollama.apply_hint(state, hint)
+                    except Exception as exc:
+                        # Ollama is optional. Never replace a usable OCR/UIA
+                        # state merely because the helper model misbehaved.
+                        self.last_vision = {
+                            "model": self.config.vision_model,
+                            "error": f"{type(exc).__name__}: {exc}",
+                            "ignored": True,
+                        }
+                        state.diagnostics.append(
+                            "Ollama-Hilfe fehlgeschlagen und wurde ignoriert: "
+                            + self.last_vision["error"]
+                        )
 
         self.last_state = state
         self.last_frame = frame
@@ -216,17 +200,13 @@ class SpiderAgent:
         return state, frame
 
     def _verify_frame_state(self, frame) -> SpiderState:
-        """Read an already captured post-action frame.
+        """Read post-action state quickly.
 
-        When Ollama Vision is enabled it remains the primary reader here too, so
-        post-move verification no longer falls back to the slow RapidOCR path
-        on every single action.
+        UIA/FastOCR is always first. Ollama is only consulted when that result
+        is visibly incomplete; a VLM failure never invalidates a usable board.
         """
         ctl = self._require_controller()
         info = ctl.info
-        vision_primary = bool(
-            self.config.vision_enabled and self.config.vision_model
-        )
 
         state = read_state(
             ctl.hwnd,
@@ -234,62 +214,34 @@ class SpiderAgent:
             info.left,
             info.top,
             stock_point=(self.config.stock_x, self.config.stock_y),
-            use_ocr=not vision_primary,
+            use_ocr=True,
         )
 
         if state.stock_point is not None:
             self.config.stock_x = float(state.stock_point[0])
             self.config.stock_y = float(state.stock_point[1])
 
-        if not vision_primary:
+        if not (self.config.vision_enabled and self.config.vision_model):
+            return state
+
+        visible = sum(len(c.cards) for c in state.columns)
+        occupied = sum(1 for c in state.columns if c.cards)
+        if state.reader == "uia" or (visible >= 8 and occupied >= 7):
             return state
 
         try:
             self._set_phase(
                 "verify_ollama",
-                f"Ollama {self.config.vision_model} verifiziert die Karten",
+                f"Ollama {self.config.vision_model} hilft bei der Verifikation",
             )
             hint = spider_ollama.analyze_spider(frame, self.config.vision_model)
-            vision_meta = spider_ollama.apply_hint(state, hint)
-            visible = sum(len(c.cards) for c in state.columns)
-            confidence = float(vision_meta.get("confidence") or 0.0)
-            raw_columns = len((vision_meta.get("raw") or {}).get("columns") or [])
-            if visible >= 5 and raw_columns >= 8:
-                return state
-
-            self._set_phase(
-                "verify_ocr_fallback",
-                "Ollama-Verifikation unsicher – OCR nur als Fallback",
-            )
-            fallback = read_state(
-                ctl.hwnd,
-                frame,
-                info.left,
-                info.top,
-                stock_point=(self.config.stock_x, self.config.stock_y),
-                use_ocr=True,
-            )
-            fallback.diagnostics.append(
-                f"Verify-Fallback: Ollama confidence={confidence:.2f}, visible={visible}, columns={raw_columns}"
-            )
-            return fallback
+            spider_ollama.apply_hint(state, hint)
         except Exception as exc:
-            self._set_phase(
-                "verify_ocr_fallback",
-                "Ollama-Verifikation fehlgeschlagen – OCR-Fallback",
+            state.diagnostics.append(
+                f"Ollama-Verifikation ignoriert: {type(exc).__name__}: {exc}"
             )
-            fallback = read_state(
-                ctl.hwnd,
-                frame,
-                info.left,
-                info.top,
-                stock_point=(self.config.stock_x, self.config.stock_y),
-                use_ocr=True,
-            )
-            fallback.diagnostics.append(
-                f"Ollama Verify-Fehler: {type(exc).__name__}: {exc}"
-            )
-            return fallback
+        return state
+
 
     def _healthy_state(self, state: SpiderState) -> bool:
         visible = sum(len(c.cards) for c in state.columns)
