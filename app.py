@@ -81,6 +81,10 @@ class Game:
 
 game = Game()
 
+# Start downloading/loading the Laya checkpoint as soon as the server starts.
+# The web UI remains usable while this happens.
+laya_player.start_loading()
+
 
 class MoveRequest(BaseModel):
     move_id: str
@@ -94,6 +98,11 @@ def index():
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+@app.get("/api/laya-status")
+def laya_status():
+    return laya_player.model_status()
 
 
 @app.get("/api/state")
@@ -209,8 +218,8 @@ pre{margin:0;white-space:pre-wrap;word-break:break-word;background:#0b0d13;borde
 </head>
 <body>
 <header>
-  <div><h1><span class="brand">Laya</span> Checkers</h1><div class="tag">Du spielst Schwarz. Laya spielt Rot. <strong>Build 1.2</strong></div></div>
-  <div class="row"><span id="engineBadge" class="badge">Laya wartet</span><button onclick="newGame()">Neues Spiel</button></div>
+  <div><h1><span class="brand">Laya</span> Checkers</h1><div class="tag">Du spielst Schwarz. Laya spielt Rot. <strong>Build 1.3</strong></div></div>
+  <div class="row"><span id="engineBadge" class="badge">Laya startet…</span><button onclick="newGame()">Neues Spiel</button></div>
 </header>
 <main>
   <section class="card board-wrap"><div id="board" class="board"></div></section>
@@ -220,7 +229,7 @@ pre{margin:0;white-space:pre-wrap;word-break:break-word;background:#0b0d13;borde
       <div id="substatus" class="muted">Schlagen ist Pflicht.</div>
       <div class="panel" style="padding:18px 0 0;margin-top:12px;border-top:1px solid var(--line)">
         <h2>Bedienung</h2>
-        <div class="muted">Klicke zuerst deinen schwarzen Stein und danach das markierte Zielfeld. Du kannst die schwarzen Steine jetzt auch per Drag & Drop ziehen. Beim ersten KI-Zug kann das Laden von Laya länger dauern.</div>
+        <div class="muted">Klicke zuerst deinen schwarzen Stein und danach das markierte Zielfeld. Du kannst die schwarzen Steine auch per Drag & Drop ziehen. Laya wird bereits beim Serverstart im Hintergrund geladen; solange das Modell noch lädt, spielt ein temporärer Fallback weiter.</div>
       </div>
     </section>
     <section class="card panel">
@@ -230,7 +239,7 @@ pre{margin:0;white-space:pre-wrap;word-break:break-word;background:#0b0d13;borde
   </aside>
 </main>
 <script>
-let state=null, selected=null, busy=false, draggedFrom=null;
+let state=null, selected=null, busy=false, draggedFrom=null, layaStatus=null;
 
 const pieceClass = p => p.toLowerCase()==='b' ? 'black' : 'red';
 
@@ -298,13 +307,55 @@ function render(){
   if(state.last_move) document.getElementById('substatus').textContent='Letzter Zug: '+state.last_move.notation;
   if(state.last_ai){
     const d=state.last_ai;
-    document.getElementById('engineBadge').className='badge '+(d.source==='laya'?'laya':'');
-    document.getElementById('engineBadge').textContent=d.source==='laya'?'Laya aktiv':'Fallback aktiv';
+    if(d.source==='laya'){
+      document.getElementById('engineBadge').className='badge laya';
+      document.getElementById('engineBadge').textContent='Laya aktiv';
+    }else if(d.source==='fallback_loading'){
+      document.getElementById('engineBadge').className='badge';
+      document.getElementById('engineBadge').textContent='Laya lädt – Fallback';
+    }else{
+      document.getElementById('engineBadge').className='badge';
+      document.getElementById('engineBadge').textContent='Fallback aktiv';
+    }
     document.getElementById('debug').textContent=JSON.stringify({
       source:d.source, model:d.model, selected:d.selected, notation:d.notation,
-      confidence:d.confidence, probabilities:d.probabilities, error:d.error||null
+      confidence:d.confidence, probabilities:d.probabilities, error:d.error||null,
+      laya_status:d.laya_status||layaStatus
     },null,2);
+  }else{
+    paintLayaStatus();
   }
+}
+
+function paintLayaStatus(){
+  const badge=document.getElementById('engineBadge');
+  if(!layaStatus) return;
+  if(layaStatus.status==='ready'){
+    badge.className='badge laya';
+    badge.textContent='Laya bereit';
+  }else if(layaStatus.status==='loading'){
+    badge.className='badge';
+    badge.textContent='Laya lädt… '+(layaStatus.elapsed_seconds ?? 0)+'s';
+  }else if(layaStatus.status==='error'){
+    badge.className='badge';
+    badge.textContent='Laya-Fehler';
+  }else{
+    badge.className='badge';
+    badge.textContent='Laya startet…';
+  }
+}
+
+async function pollLayaStatus(){
+  try{
+    const resp=await fetch('/api/laya-status',{cache:'no-store'});
+    if(resp.ok){
+      layaStatus=await resp.json();
+      if(!state || !state.last_ai || state.last_ai.source!=='laya') paintLayaStatus();
+      if(layaStatus.status==='error'){
+        document.getElementById('debug').textContent='Laya konnte nicht geladen werden:\n'+(layaStatus.error||'Unbekannter Fehler');
+      }
+    }
+  }catch(_){}
 }
 
 async function clickSquare(r,c){
@@ -398,11 +449,14 @@ async function newGame(){
   selected=null;
   busy=false;
   document.getElementById('debug').textContent='Noch kein KI-Zug.';
-  document.getElementById('engineBadge').textContent='Laya wartet';
+  document.getElementById('engineBadge').textContent='Laya startet…';
   render();
+  pollLayaStatus();
 }
 
 load();
+pollLayaStatus();
+setInterval(pollLayaStatus,1500);
 </script>
 </body>
 </html>"""
