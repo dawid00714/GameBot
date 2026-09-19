@@ -103,3 +103,8 @@ UIA bleibt bei vollständigen Accessibility-Daten die primäre Quelle. Ollama so
 
 Ab Build 3.5 gilt **API bereit** erst nach einem echten Test gegen `GET /v1/models`.
 Der API-Key wird beim Einfügen normalisiert (z. B. ein versehentlich mitkopiertes `Bearer ` oder äußere Anführungszeichen) und auf ungültige Nicht-ASCII-/Steuerzeichen geprüft. So schlägt die Partie nicht erst beim ersten Zug mit einem unklaren `UnicodeEncodeError` fehl.
+
+
+## Laya wird nur bei Bedarf geladen
+
+Ab Build 3.6 wird Laya **nicht mehr beim Start von SpiderBot automatisch geladen**. Das lokale Laya-Modell wird erst geladen, wenn in der Oberfläche tatsächlich `Laya lokal` gewählt wird. Wer TypeSafe/Jev verwendet, wartet daher nicht mehr auf den 322M-Laya-Checkpoint.
