@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import shutil
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 import engine
@@ -15,6 +17,7 @@ _laya_error: str | None = None
 _laya_loading = False
 _laya_started: float | None = None
 _laya_lock = threading.Lock()
+_laya_load_path: str | None = None
 
 _typesafe_api_key = os.getenv("TYPESAFE_API_KEY", "").strip() or None
 _typesafe_lock = threading.Lock()
@@ -24,13 +27,66 @@ class AgentUnavailable(RuntimeError):
     pass
 
 
+def _local_model_dir() -> Path:
+    safe_name = _LAYA_MODEL.replace("/", "__").replace("\\", "__")
+    return Path(__file__).resolve().parent / ".models" / safe_name
+
+
+def _materialize_laya_without_symlinks() -> str:
+    """Download a real-file copy of the checkpoint for Windows.
+
+    Hugging Face's normal cache uses links from snapshots to blob files. On
+    Windows that can raise WinError 1314 when Developer Mode / symlink
+    privileges are disabled. A local_dir snapshot avoids requiring those
+    privileges and gives laya.load() an ordinary directory.
+    """
+    from huggingface_hub import snapshot_download
+
+    target = _local_model_dir()
+    target.mkdir(parents=True, exist_ok=True)
+
+    kwargs = {
+        "repo_id": _LAYA_MODEL,
+        "local_dir": str(target),
+        "token": os.environ.get("HF_TOKEN"),
+    }
+
+    # Older huggingface_hub versions expose this switch explicitly. Newer
+    # versions materialize local_dir files directly and removed/deprecated it.
+    try:
+        snapshot_download(local_dir_use_symlinks=False, **kwargs)
+    except TypeError as exc:
+        if "local_dir_use_symlinks" not in str(exc):
+            raise
+        snapshot_download(**kwargs)
+
+    required = target / "rl_agent_config.json"
+    weights = target / "model.safetensors"
+    if not required.exists() or not weights.exists():
+        raise FileNotFoundError(
+            f"Windows-safe Laya download incomplete in {target}. "
+            "rl_agent_config.json or model.safetensors is missing."
+        )
+    return str(target)
+
+
 def _load_laya_worker() -> None:
-    global _laya_agent, _laya_error, _laya_loading
+    global _laya_agent, _laya_error, _laya_loading, _laya_load_path
     try:
         import laya
-        agent = laya.load(_LAYA_MODEL)
+
+        # On Windows always use a normal local directory instead of the
+        # symlink-based Hugging Face snapshot cache. This directly fixes
+        # WinError 1314 ("Dem Client fehlt ein erforderliches Recht").
+        if os.name == "nt":
+            load_path = _materialize_laya_without_symlinks()
+        else:
+            load_path = _LAYA_MODEL
+
+        agent = laya.load(load_path)
         with _laya_lock:
             _laya_agent = agent
+            _laya_load_path = load_path
             _laya_error = None
     except Exception as exc:
         with _laya_lock:
@@ -50,6 +106,24 @@ def start_laya_loading() -> None:
         threading.Thread(target=_load_laya_worker, name="laya-arena-loader", daemon=True).start()
 
 
+def retry_laya_loading(clear_local_copy: bool = False) -> None:
+    global _laya_error, _laya_loading, _laya_agent, _laya_started, _laya_load_path
+    with _laya_lock:
+        if _laya_loading:
+            return
+        _laya_error = None
+        _laya_agent = None
+        _laya_load_path = None
+        _laya_started = None
+
+    if clear_local_copy:
+        target = _local_model_dir()
+        if target.exists():
+            shutil.rmtree(target, ignore_errors=True)
+
+    start_laya_loading()
+
+
 def laya_status() -> dict[str, Any]:
     with _laya_lock:
         if _laya_agent is not None:
@@ -63,6 +137,8 @@ def laya_status() -> dict[str, Any]:
         return {
             "status": status,
             "model": _LAYA_MODEL,
+            "load_path": _laya_load_path,
+            "windows_safe_download": os.name == "nt",
             "error": _laya_error,
             "elapsed_seconds": round(time.time() - _laya_started, 1) if _laya_started else 0.0,
         }
