@@ -12,6 +12,7 @@ from spider_learning import SpiderLearning
 from spider_solver import SpiderAction, add_lookahead, generate_actions, state_signature
 from spider_state import SpiderState, read_state
 from spider_windows import WindowAutomationError, WindowController, frame_difference
+from vm_guest_input import input_abort_requested
 
 
 class SpiderAgentError(RuntimeError):
@@ -506,6 +507,9 @@ class SpiderAgent:
                 "overridden": False,
                 "executed": selected.notation(),
             }
+
+        if input_abort_requested():
+            raise SpiderAgentError("STOP_REQUESTED")
 
         self._set_phase("input", f"Maus-Drag {selected.notation()}")
         changed_pixels, diff, after, input_used, input_debug = self._execute(
