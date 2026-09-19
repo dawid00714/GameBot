@@ -136,7 +136,7 @@ def _parse_suit(text: str) -> str:
 def _column_centers(width: int) -> list[float]:
     # Fallback only. The actual centers are derived from observed card X values
     # whenever possible.
-    return [width * (0.09 + i * 0.091) for i in range(10)]
+    return [width * (0.105 + i * 0.088) for i in range(10)]
 
 
 def _observed_column_centers(cards: list[VisibleCard], width: int) -> list[float] | None:
@@ -308,6 +308,156 @@ def ocr_status() -> dict[str, Any]:
     }
 
 
+def _read_fast_ocr(frame: np.ndarray) -> tuple[list[VisibleCard], list[str]]:
+    """Fast rank reader tuned for the fixed 10-column Spider layout.
+
+    Instead of OCR on the entire 1536x784 game frame, build one contact sheet
+    from the ten narrow tableau columns, enlarge it once, and run RapidOCR a
+    single time. This makes the rank glyphs much larger while discarding score,
+    menus, clock and most card artwork.
+    """
+    global _ocr_engine
+    cards: list[VisibleCard] = []
+    diag: list[str] = []
+
+    try:
+        if _ocr_engine is None:
+            from rapidocr import RapidOCR
+            _ocr_engine = RapidOCR()
+    except Exception as exc:
+        return [], [f"FastOCR nicht verfügbar: {type(exc).__name__}: {exc}"]
+
+    h, w = frame.shape[:2]
+    centers = _column_centers(w)
+
+    y0 = int(h * 0.13)
+    y1 = int(h * 0.72)
+    half_w = max(18, int(w * 0.040))
+    scale = 2.0
+    gap = 8
+
+    strips: list[np.ndarray] = []
+    source_ranges: list[tuple[int, int]] = []
+    max_sw = 0
+    sh = max(1, y1 - y0)
+
+    for cx in centers:
+        x0 = max(0, int(round(cx)) - half_w)
+        x1 = min(w, int(round(cx)) + half_w)
+        crop = frame[y0:y1, x0:x1]
+        if crop.size == 0:
+            crop = np.full((sh, max(1, half_w * 2), 3), 255, dtype=np.uint8)
+        resized = cv2.resize(
+            crop,
+            None,
+            fx=scale,
+            fy=scale,
+            interpolation=cv2.INTER_CUBIC,
+        )
+        strips.append(resized)
+        source_ranges.append((x0, x1))
+        max_sw = max(max_sw, resized.shape[1])
+
+    # 2 rows x 5 columns keeps detector input compact.
+    rows, cols_n = 2, 5
+    cell_h = max(strip.shape[0] for strip in strips) + gap * 2
+    cell_w = max_sw + gap * 2
+    sheet = np.full((rows * cell_h, cols_n * cell_w, 3), 255, dtype=np.uint8)
+
+    panel_meta: list[dict[str, int]] = []
+    for idx, strip in enumerate(strips):
+        row = idx // cols_n
+        col = idx % cols_n
+        ox = col * cell_w + gap
+        oy = row * cell_h + gap
+        sheet[oy:oy + strip.shape[0], ox:ox + strip.shape[1]] = strip
+        panel_meta.append({
+            "ox": ox,
+            "oy": oy,
+            "sw": strip.shape[1],
+            "sh": strip.shape[0],
+        })
+
+    try:
+        result = _ocr_engine(
+            sheet,
+            use_det=True,
+            use_cls=False,
+            use_rec=True,
+            text_score=0.20,
+            box_thresh=0.25,
+            unclip_ratio=1.5,
+        )
+    except Exception as exc:
+        return [], [f"FastOCR Laufzeitfehler: {type(exc).__name__}: {exc}"]
+
+    boxes = getattr(result, "boxes", None)
+    txts = getattr(result, "txts", None)
+    scores = getattr(result, "scores", None)
+    if boxes is None or txts is None or scores is None or not len(boxes):
+        return [], ["FastOCR: keine Rang-Glyphen erkannt"]
+
+    seen: set[tuple[int, str, int]] = set()
+    for box, text, score in zip(boxes, txts, scores):
+        try:
+            rank = _parse_rank(str(text))
+            score_f = float(score)
+            if rank is None or score_f < 0.20:
+                continue
+
+            pts = np.asarray(box, dtype=float)
+            sx = float(pts[:, 0].mean())
+            sy = float(pts[:, 1].mean())
+
+            # Resolve contact-sheet panel.
+            col_sheet = int(sx // cell_w)
+            row_sheet = int(sy // cell_h)
+            panel_idx = row_sheet * cols_n + col_sheet
+            if not 0 <= panel_idx < 10:
+                continue
+
+            meta = panel_meta[panel_idx]
+            local_x = (sx - meta["ox"]) / scale
+            local_y = (sy - meta["oy"]) / scale
+            if not (0 <= local_x <= (source_ranges[panel_idx][1] - source_ranges[panel_idx][0])):
+                continue
+            if not (0 <= local_y <= sh):
+                continue
+
+            source_x = source_ranges[panel_idx][0] + local_x
+            source_y = y0 + local_y
+
+            # Card ranks are in the upper-left corner of each white card.
+            # Reject OCR produced by face artwork near the strip's right edge.
+            strip_width = max(1, source_ranges[panel_idx][1] - source_ranges[panel_idx][0])
+            if local_x > strip_width * 0.58:
+                continue
+
+            key = (panel_idx, rank, int(source_y // max(4, h * 0.012)))
+            if key in seen:
+                continue
+            seen.add(key)
+
+            cards.append(
+                VisibleCard(
+                    rank=rank,
+                    suit="S",
+                    x=centers[panel_idx],
+                    y=float(source_y),
+                    width=max(10.0, float(pts[:, 0].max() - pts[:, 0].min()) / scale),
+                    height=max(10.0, float(pts[:, 1].max() - pts[:, 1].min()) / scale),
+                    source="fastocr",
+                    confidence=score_f,
+                )
+            )
+        except Exception:
+            continue
+
+    cards.sort(key=lambda c: (c.x, c.y))
+    diag.append(f"FastOCR: {len(cards)} Rang-Glyphen in 10 Spalten erkannt")
+    return cards, diag
+
+
 def _read_ocr(frame: np.ndarray) -> tuple[list[VisibleCard], list[str]]:
     global _ocr_engine
     cards: list[VisibleCard] = []
@@ -425,10 +575,24 @@ def read_state(
         cards = uia_cards
         reader = "uia"
     elif use_ocr:
-        ocr_cards, ocr_diag = _read_ocr(frame)
-        diag.extend(ocr_diag)
-        cards = ocr_cards if len(ocr_cards) > len(uia_cards) else uia_cards
-        reader = "ocr" if cards is ocr_cards else "uia-partial"
+        fast_cards, fast_diag = _read_fast_ocr(frame)
+        diag.extend(fast_diag)
+
+        if len(fast_cards) >= 5:
+            cards = fast_cards if len(fast_cards) > len(uia_cards) else uia_cards
+            reader = "fastocr" if cards is fast_cards else "uia-partial"
+        else:
+            # Slow full-frame OCR is now a last-resort fallback only.
+            ocr_cards, ocr_diag = _read_ocr(frame)
+            diag.extend(ocr_diag)
+            best = fast_cards if len(fast_cards) >= len(ocr_cards) else ocr_cards
+            cards = best if len(best) > len(uia_cards) else uia_cards
+            if cards is fast_cards:
+                reader = "fastocr-partial"
+            elif cards is ocr_cards:
+                reader = "ocr"
+            else:
+                reader = "uia-partial"
     else:
         # Ollama/VLM mode: do not spend seconds running RapidOCR first.
         # Keep any partial UIA observations; the vision model will fill/replace
