@@ -87,6 +87,13 @@ def _runner() -> None:
                 if agent.game_finished:
                     break
             except Exception as exc:
+                if run_stop.is_set() or str(exc) == "STOP_REQUESTED":
+                    runtime["last_loop_error"] = None
+                    try:
+                        agent._set_phase("idle", "Durch Alt+L/Stop angehalten")
+                    except Exception:
+                        pass
+                    break
                 runtime["last_loop_error"] = f"{type(exc).__name__}: {exc}"
                 try:
                     agent._set_phase("error", runtime["last_loop_error"])
@@ -332,6 +339,7 @@ def step():
     if not step_lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="Eine Analyse/Aktion läuft bereits.")
     try:
+        clear_input_abort()
         agent.step()
         runtime["steps"] += 1
         runtime["last_loop_error"] = None
@@ -467,7 +475,7 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
         <div><label>Vorausschau</label><select id="depth"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option></select></div>
       </div>
       <div class="row" style="margin-top:9px">
-        <label class="check"><input id="learning" type="checkbox" checked> Selbstlernen aktiv</label>
+        <label class="check"><input id="learning" type="checkbox" checked> Deep-RL Selbstlernen aktiv (Belohnung + TD-Lernen)</label>
       </div>
       <hr>
       <div class="row">
@@ -519,6 +527,7 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
 
     <section class="card panel">
       <h2>Lernen</h2>
+      <div class="small muted" style="margin-bottom:7px">Online Deep-Q-Netz lernt nach jedem akzeptierten Zug aus Belohnung, Folgezustand und späteren Gewinnen.</div>
       <pre id="learningDump">Noch keine Daten.</pre>
       <div class="row" style="margin-top:8px"><button id="resetLearning" class="danger">Lerndaten löschen</button><button id="retryLaya">Laya neu laden</button></div>
     </section>
