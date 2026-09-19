@@ -5,3 +5,5 @@ __pycache__/
 .env
 arena_learning.json
 arena_learning.json.tmp
+
+.models/
