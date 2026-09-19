@@ -48,7 +48,9 @@ Der Agent wählt ein echtes Windows-Spiel-Fenster aus und benutzt eine eigene Hi
 3. zur Zielspalte bewegen,
 4. linke Maustaste loslassen.
 
-Für den Kartenstapel unten rechts kann die Position direkt im Live-Screenshot kalibriert werden.
+Der Kartenstapel unten rechts wird automatisch im Screenshot erkannt.
+
+SpiderBot ist strikt **background-only**: Er verwendet weder `SetCursorPos`, `SendInput`, `mouse_event` noch `SetForegroundWindow`. Wenn Microsoft Solitaire Hintergrundnachrichten ablehnt, meldet der Agent den Fehler, statt die echte Maus zu übernehmen.
 
 ## Python 3.13
 
@@ -66,3 +68,32 @@ Das alte Paket unterstützt Python 3.13 nicht. Der neue Stack ist für Python 3.
 - `spider_learning.py` – persistentes Lernen
 - `requirements.txt` – nur SpiderBot-Abhängigkeiten
 - `start.bat` – eigenständiger Starter
+
+## Ollama Vision
+
+Optional kann SpiderBot ein lokal laufendes Ollama-Vision-Modell als zweite Bildanalyse verwenden.
+
+Die Oberfläche fragt `http://127.0.0.1:11434/api/tags` und `/api/show` ab und zeigt nur Modelle an, die Vision unterstützen oder anhand ihres Modellnamens eindeutig als Vision-Modell erkannt werden.
+
+Geeignete Beispiele:
+
+- `qwen3.5:4b`
+- `qwen3.5:0.8b`
+- `gemma3:4b`
+- `LFM2.5-VL-1.6B`-Varianten
+
+Ablauf:
+
+```
+Screenshot
+  ├─ UI Automation / OCR
+  └─ optional Ollama Vision
+            ↓
+      konservative Fusion
+            ↓
+      legaler Spider-Zustand
+            ↓
+      Laya oder TypeSafe/Jev entscheidet
+```
+
+UIA bleibt bei vollständigen Accessibility-Daten die primäre Quelle. Ollama soll fehlende/unsichere Bildinformationen ergänzen, nicht zuverlässige Kartendaten blind überschreiben.
