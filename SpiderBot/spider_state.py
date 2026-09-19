@@ -559,6 +559,126 @@ def _detect_stock_at_point(frame: np.ndarray, nx: float, ny: float) -> bool:
     return bool(purple > 0.035)
 
 
+def verify_rank_at_card(
+    frame: np.ndarray,
+    card: VisibleCard,
+    expected_rank: str,
+) -> dict[str, Any]:
+    """Visually verify one card rank immediately before a drag.
+
+    This is intentionally independent from UI Automation. It crops the rank
+    corner from the actual screenshot and runs a tiny RapidOCR pass. It is a
+    safety gate: a move is not executed when the pixels say a different rank.
+    """
+    global _ocr_engine
+
+    expected_rank = str(expected_rank).upper()
+    h, w = frame.shape[:2]
+
+    try:
+        if _ocr_engine is None:
+            from rapidocr import RapidOCR
+            _ocr_engine = RapidOCR()
+    except Exception as exc:
+        return {
+            "ok": False,
+            "status": "ocr_unavailable",
+            "expected": expected_rank,
+            "observed": [],
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+    # UIA may describe either a full card or just its accessibility glyph.
+    # Try several small crops around the visible upper-left rank area.
+    if card.source.startswith("uia") and card.width > 35 and card.height > 45:
+        left = card.x - card.width / 2.0
+        top = card.y - card.height / 2.0
+        rois = [
+            (left - 4, top - 4, left + card.width * 0.42, top + card.height * 0.40),
+            (left - 6, top - 6, left + card.width * 0.52, top + card.height * 0.52),
+        ]
+    else:
+        rois = [
+            (card.x - 32, card.y - 24, card.x + 34, card.y + 28),
+            (card.x - 45, card.y - 32, card.x + 48, card.y + 38),
+        ]
+
+    observed: list[tuple[str, float]] = []
+    for x0f, y0f, x1f, y1f in rois:
+        x0 = max(0, int(round(x0f)))
+        y0 = max(0, int(round(y0f)))
+        x1 = min(w, int(round(x1f)))
+        y1 = min(h, int(round(y1f)))
+        if x1 - x0 < 8 or y1 - y0 < 8:
+            continue
+
+        crop = frame[y0:y1, x0:x1]
+        crop = cv2.resize(crop, None, fx=4.0, fy=4.0, interpolation=cv2.INTER_CUBIC)
+
+        try:
+            result = _ocr_engine(
+                crop,
+                use_det=True,
+                use_cls=False,
+                use_rec=True,
+                text_score=0.20,
+                box_thresh=0.20,
+                unclip_ratio=1.5,
+            )
+        except Exception:
+            continue
+
+        boxes = getattr(result, "boxes", None)
+        txts = getattr(result, "txts", None)
+        scores = getattr(result, "scores", None)
+        if boxes is None or txts is None or scores is None:
+            continue
+
+        for text, score in zip(txts, scores):
+            rank = _parse_rank(str(text))
+            if rank is None:
+                continue
+            try:
+                conf = float(score)
+            except Exception:
+                conf = 0.0
+            if conf >= 0.18:
+                observed.append((rank, conf))
+
+    # Highest-confidence observation for every distinct rank.
+    best: dict[str, float] = {}
+    for rank, conf in observed:
+        best[rank] = max(best.get(rank, 0.0), conf)
+
+    ordered = sorted(best.items(), key=lambda item: item[1], reverse=True)
+    ranks = [rank for rank, _ in ordered]
+
+    if expected_rank in best:
+        return {
+            "ok": True,
+            "status": "verified",
+            "expected": expected_rank,
+            "observed": ranks,
+            "confidence": round(best[expected_rank], 3),
+        }
+
+    if ordered:
+        return {
+            "ok": False,
+            "status": "mismatch",
+            "expected": expected_rank,
+            "observed": ranks,
+            "confidence": round(ordered[0][1], 3),
+        }
+
+    return {
+        "ok": False,
+        "status": "unreadable",
+        "expected": expected_rank,
+        "observed": [],
+    }
+
+
 def read_state(
     hwnd: int,
     frame: np.ndarray,
@@ -571,13 +691,33 @@ def read_state(
     height, width = frame.shape[:2]
     uia_cards, diag = _read_uia(hwnd, width, height, client_left, client_top)
 
-    if len(uia_cards) >= 6:
-        cards = uia_cards
-        reader = "uia"
-    elif use_ocr:
+    # UIA is useful for precise card geometry, but its accessible names are not
+    # blindly trusted anymore. Always obtain a visual rank cross-check.
+    fast_cards: list[VisibleCard] = []
+    if use_ocr:
         fast_cards, fast_diag = _read_fast_ocr(frame)
         diag.extend(fast_diag)
 
+    if len(uia_cards) >= 6:
+        cards = uia_cards
+        reader = "uia+visual-gate"
+        if fast_cards:
+            # Report obvious top-level disagreements. The hard pre-drag gate
+            # below is authoritative before the mouse can move.
+            ucols = _group_cards(uia_cards, width, height, None)
+            fcols = _group_cards(fast_cards, width, height, None)
+            conflicts = []
+            for uc, fc in zip(ucols, fcols):
+                if uc.cards and fc.cards:
+                    ur = uc.cards[-1].rank
+                    fr = fc.cards[-1].rank
+                    if ur != fr and fc.cards[-1].confidence >= 0.45:
+                        conflicts.append(f"C{uc.index+1}:{ur}!={fr}")
+            if conflicts:
+                diag.append(
+                    "UIA/FastOCR-Konflikt: " + ", ".join(conflicts[:6])
+                )
+    elif use_ocr:
         if len(fast_cards) >= 5:
             cards = fast_cards if len(fast_cards) > len(uia_cards) else uia_cards
             reader = "fastocr" if cards is fast_cards else "uia-partial"
