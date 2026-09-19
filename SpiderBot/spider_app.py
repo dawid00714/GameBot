@@ -13,7 +13,7 @@ import spider_ollama
 from spider_agent import SpiderAgent, SpiderAgentError
 from spider_windows import WindowAutomationError, list_windows
 
-app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="3.6.0")
+app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="3.7.0")
 agent = SpiderAgent()
 agent_lock = threading.Lock()
 run_stop = threading.Event()
@@ -110,7 +110,7 @@ def index():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "version": "3.6.0", "windows_agent": True}
+    return {"ok": True, "version": "3.7.0", "windows_agent": True}
 
 
 @app.get("/api/ollama/models")
@@ -318,7 +318,7 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
     <h1><span class="pink">Laya</span> / <span class="cyan">TypeSafe Jev</span> · Windows Spider Agent</h1>
     <div class="muted">Nur Hintergrund-Eingabe · echte Maus bleibt unberührt · kein Fokuswechsel · Live-Screenshot</div>
   </div>
-  <div class="small muted">Build 3.6</div>
+  <div class="small muted">Build 3.7</div>
 </header>
 
 <main>
@@ -503,7 +503,7 @@ async function refreshOllama(){
   }
 }
 
-async async function saveKey(){
+async function saveKey(){
   try{
     const value=$('apiKey').value;
     if(!value.trim()){
