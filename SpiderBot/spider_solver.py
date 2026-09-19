@@ -172,17 +172,22 @@ def generate_actions(state: SpiderState) -> list[SpiderAction]:
             )
         ]
 
-    # Deal is legal only when every tableau column contains at least one card.
-    if state.stock_available and all(col.cards or col.hidden_above for col in state.columns):
-        no_moves = not actions
-        score = 18.0 if no_moves else -22.0
+    # HARD RULE: never offer STOCK while any tableau move exists.
+    # This prevents TypeSafe/Laya/Deep-RL from repeatedly dealing new rows
+    # despite legal card moves still being available.
+    if (
+        not actions
+        and state.stock_available
+        and all(col.cards or col.hidden_above for col in state.columns)
+    ):
         actions.append(
             SpiderAction(
                 id=f"a{aid}",
                 kind="deal",
-                immediate_score=score,
+                immediate_score=-4.0,
                 features={
                     "deal": 1.0,
+                    "forced_deal": 1.0,
                     "reveal_hidden": 0.0,
                     "same_suit_join": 0.0,
                     "source_empty": 0.0,
