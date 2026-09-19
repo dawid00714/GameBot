@@ -34,7 +34,6 @@ _RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
 _SPIDER_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "q": {"type": "number", "minimum": 0, "maximum": 1},
         "s": {"type": "boolean"},
         "c": {
             "type": "array",
@@ -43,30 +42,21 @@ _SPIDER_SCHEMA: dict[str, Any] = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "i": {"type": "integer", "minimum": 1, "maximum": 10},
                     "h": {"type": "boolean"},
-                    "v": {
+                    "r": {
                         "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "r": {"type": "string", "enum": _RANKS},
-                                "y": {"type": "number", "minimum": 0.05, "maximum": 0.92},
-                            },
-                            "required": ["r", "y"],
-                            "additionalProperties": False,
-                        },
+                        "items": {"type": "string", "enum": _RANKS},
+                        "maxItems": 13,
                     },
                 },
-                "required": ["i", "h", "v"],
+                "required": ["h", "r"],
                 "additionalProperties": False,
             },
         },
     },
-    "required": ["q", "s", "c"],
+    "required": ["s", "c"],
     "additionalProperties": False,
 }
-
 
 class OllamaVisionError(RuntimeError):
     pass
@@ -199,36 +189,36 @@ def _extract_json(text: str) -> dict[str, Any]:
 
 
 def _normalize_result(raw: dict[str, Any]) -> dict[str, Any]:
-    if "c" not in raw:
+    # Compact helper schema used by Build 4.9:
+    # {"s":true,"c":[{"h":true,"r":["A"]}, ... exactly 10 columns]}
+    if "c" in raw and isinstance(raw.get("c"), list):
+        columns: list[dict[str, Any]] = []
+        for idx, col in enumerate((raw.get("c") or [])[:10], start=1):
+            if not isinstance(col, dict):
+                continue
+            ranks = []
+            for rank in col.get("r") or []:
+                rank = str(rank or "").upper().strip()
+                if rank in RANK_VALUE:
+                    ranks.append({"rank": rank, "y": None})
+            columns.append({
+                "column": idx,
+                "hidden": bool(col.get("h", False)),
+                "cards": ranks,
+            })
         return {
-            "confidence": raw.get("confidence", 0.8),
-            "stock_visible": bool(raw.get("stock_visible", False)),
-            "columns": raw.get("columns") or [],
-            "notes": raw.get("notes", ""),
+            "confidence": 0.85,
+            "stock_visible": bool(raw.get("s", False)),
+            "columns": columns,
+            "notes": "compact-helper",
         }
 
-    columns: list[dict[str, Any]] = []
-    for col in raw.get("c") or []:
-        if not isinstance(col, dict):
-            continue
-        cards: list[dict[str, Any]] = []
-        for card in col.get("v") or []:
-            if not isinstance(card, dict):
-                continue
-            cards.append({
-                "rank": str(card.get("r") or "").upper(),
-                "y": card.get("y"),
-            })
-        columns.append({
-            "column": col.get("i"),
-            "hidden": bool(col.get("h", False)),
-            "cards": cards,
-        })
-
+    # Backward compatibility with older verbose responses.
     return {
-        "confidence": raw.get("q", 0.8),
-        "stock_visible": bool(raw.get("s", False)),
-        "columns": columns,
+        "confidence": raw.get("confidence", 0.8),
+        "stock_visible": bool(raw.get("stock_visible", False)),
+        "columns": raw.get("columns") or [],
+        "notes": raw.get("notes", ""),
     }
 
 
@@ -239,11 +229,11 @@ def analyze_spider(frame: np.ndarray, model: str) -> dict[str, Any]:
 
     image = _frame_to_base64(frame)
     prompt = (
-        "Read this Microsoft Spider Solitaire screenshot. "
-        "There are exactly 10 tableau columns left-to-right and one suit. "
-        "For each column report whether purple face-down cards remain and every "
-        "visible face-up rank from top to bottom. Also report whether the purple "
-        "stock pile is visible. Ignore menus, score, clock and buttons."
+        "Microsoft Spider Solitaire, one-suit. Read only the 10 tableau columns "
+        "from left to right. For each column return h=true if purple face-down "
+        "cards remain above the visible cards, and r as the visible face-up ranks "
+        "from top to bottom. Also return s=true if the purple stock pile is visible. "
+        "Do not include coordinates, confidence, explanations, score, clock or menus."
     )
 
     payload = {
@@ -255,7 +245,7 @@ def analyze_spider(frame: np.ndarray, model: str) -> dict[str, Any]:
         "think": False,
         "options": {
             "temperature": 0,
-            "num_predict": 384,
+            "num_predict": 220,
             "num_ctx": 2048,
         },
         "keep_alive": "60m",
@@ -323,12 +313,15 @@ def _valid_model_columns(hint: dict[str, Any]) -> dict[int, dict[str, Any]]:
             rank = str(card.get("rank") or "").upper().strip()
             if rank not in RANK_VALUE:
                 continue
-            try:
-                y = float(card.get("y"))
-            except Exception:
-                continue
-            if not 0.05 <= y <= 0.90:
-                continue
+            raw_y = card.get("y")
+            y = None
+            if raw_y is not None:
+                try:
+                    y = float(raw_y)
+                except Exception:
+                    y = None
+                if y is not None and not 0.05 <= y <= 0.90:
+                    y = None
             cards.append({"rank": rank, "y": y})
 
         result[idx] = {
@@ -375,25 +368,26 @@ def apply_hint(state: SpiderState, hint: dict[str, Any]) -> dict[str, Any]:
                 col.hidden_above = True
             continue
 
-        # For OCR/partial/missing columns, a reasonably confident local VLM may
-        # replace the visible-card sequence while preserving the stable X center.
-        if model_cards:
+        # Ollama is now a rank helper, not a geometry source. It only replaces
+        # ranks when UIA/OCR already found the same number of physical cards.
+        # This avoids invented coordinates and keeps real mouse drags accurate.
+        if model_cards and col.cards and len(model_cards) == len(col.cards):
             rebuilt: list[VisibleCard] = []
-            for card in model_cards:
+            for current, card in zip(col.cards, model_cards):
                 rebuilt.append(
                     VisibleCard(
                         rank=card["rank"],
                         suit="S",
-                        x=col.x,
-                        y=float(card["y"]) * state.height,
-                        width=max(24.0, state.width * 0.045),
-                        height=max(40.0, state.height * 0.11),
-                        source=f"ollama:{model}",
-                        confidence=confidence,
+                        x=current.x,
+                        y=current.y,
+                        width=current.width,
+                        height=current.height,
+                        source=f"{current.source}+ollama:{model}",
+                        confidence=max(current.confidence, confidence),
                     )
                 )
             col.cards = rebuilt
-            col.hidden_above = bool(model_col["hidden"])
+            col.hidden_above = bool(model_col["hidden"]) or col.hidden_above
             applied_columns.append(idx1)
 
     if bool(hint.get("stock_visible")):
