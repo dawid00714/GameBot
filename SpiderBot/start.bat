@@ -2,6 +2,10 @@
 setlocal
 cd /d "%~dp0"
 
+rem Benutzer hat echte Host-Maussteuerung explizit angefordert.
+set "SPIDER_REAL_MOUSE=1"
+set "SPIDER_VM_GUEST=0"
+
 echo ===============================================
 echo   SpiderBot - Laya / TypeSafe Windows Agent
 echo ===============================================
@@ -42,6 +46,8 @@ if errorlevel 1 (
 )
 
 echo [4/5] Starte SpiderBot auf http://127.0.0.1:8010
-echo [5/5] Im Browser muss oben Build 4.7 stehen.
+echo       ECHTE WINDOWS-MAUS IST AKTIV.
+echo       ALT+L = Agent START / STOP.
+echo [5/5] Im Browser muss oben Build 4.8 stehen.
 start "" http://127.0.0.1:8010
 ".venv\Scripts\python.exe" -m uvicorn spider_app:app --host 127.0.0.1 --port 8010
