@@ -13,7 +13,7 @@ import spider_ollama
 from spider_agent import SpiderAgent, SpiderAgentError
 from spider_windows import WindowAutomationError, list_windows
 
-app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="3.9.0")
+app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="4.0.0")
 agent = SpiderAgent()
 agent_lock = threading.RLock()
 step_lock = threading.Lock()
@@ -123,7 +123,7 @@ def index():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "version": "3.9.0", "windows_agent": True}
+    return {"ok": True, "version": "4.0.0", "windows_agent": True}
 
 
 @app.get("/api/ollama/models")
@@ -339,7 +339,7 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
     <h1><span class="pink">Laya</span> / <span class="cyan">TypeSafe Jev</span> · Windows Spider Agent</h1>
     <div class="muted">Nur Hintergrund-Eingabe · echte Maus bleibt unberührt · kein Fokuswechsel · Live-Screenshot</div>
   </div>
-  <div class="small muted">Build 3.9</div>
+  <div class="small muted">Build 4.0</div>
 </header>
 
 <main>
@@ -405,11 +405,11 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
         <div><label>Wartezeit pro Aktion</label><select id="delay"><option value=".45">0,45 s</option><option value=".85" selected>0,85 s</option><option value="1.2">1,2 s</option><option value="1.8">1,8 s</option></select></div>
         <div>
           <label>Eingabemodus</label>
-          <div class="badge ok" style="margin-top:7px">UIA → BACKGROUND · echte Maus: AUS</div>
+          <div class="badge ok" style="margin-top:7px">UIA → KEYBOARD → BACKGROUND · echte Maus: AUS</div>
         </div>
       </div>
       <div id="stockStatus" class="small muted" style="margin-top:8px">Stock wird automatisch gesucht…</div>
-      <div class="small muted" style="margin-top:5px">SpiderBot versucht zuerst Windows UI Automation (Invoke/Selection ohne Maus). Nur wenn das nicht reicht, probiert er Hintergrund-WM_MOUSE-Nachrichten. Die echte Windows-Maus wird dabei nie bewegt und das Spielfenster nicht nach vorne geholt.</div>
+      <div class="small muted" style="margin-top:5px">SpiderBot versucht zuerst Windows UI Automation. Wenn das keine Karte verschiebt, nutzt er Spider-Tastaturnavigation (Pfeiltasten + Enter) als Hintergrund-Nachrichten und erst danach WM_MOUSE. Echte Maus und echte Tastatur werden nie übernommen.</div>
     </section>
 
     <section class="card panel">
