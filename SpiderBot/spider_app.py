@@ -14,7 +14,7 @@ from spider_agent import SpiderAgent, SpiderAgentError
 from spider_state import ocr_status, warm_ocr
 from spider_windows import WindowAutomationError, list_windows
 
-app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="4.6.0")
+app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="4.7.0")
 agent = SpiderAgent()
 agent_lock = threading.RLock()
 step_lock = threading.Lock()
@@ -130,7 +130,7 @@ def index():
 def health():
     return {
         "ok": True,
-        "version": "4.6.0",
+        "version": "4.7.0",
         "windows_agent": True,
         "ocr_fallback": ocr_status(),
     }
@@ -349,7 +349,7 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
     <h1><span class="pink">Laya</span> / <span class="cyan">TypeSafe Jev</span> · Windows Spider Agent</h1>
     <div class="muted">Host: keine echte Maus · VM-Gast: echter Drag nur innerhalb der VM · Live-Screenshot</div>
   </div>
-  <div class="small muted">Build 4.6</div>
+  <div class="small muted">Build 4.7</div>
 </header>
 
 <main>
@@ -630,11 +630,11 @@ async function refreshStatus(){
     ));
     const im=d.input_status?.mode||'unbekannt';
     if(im==='vm_guest_real_drag'){
-      $('inputModeBadge').textContent='VM-GAST: ECHTER DRAG · Host-Maus bleibt frei';
+      $('inputModeBadge').textContent='VM-GAST: ECHTER DRAG · spielbereit';
       $('inputModeBadge').className='badge ok';
     }else if(im==='host_background_drag'){
-      $('inputModeBadge').textContent='HOST: Hintergrund-Messages · Solitaire kann sie blockieren';
-      $('inputModeBadge').className='badge warn';
+      $('inputModeBadge').textContent='HOST-MODUS: ECHTER DRAG NICHT MÖGLICH';
+      $('inputModeBadge').className='badge bad';
     }else{
       $('inputModeBadge').textContent='Eingabemodus: '+im;
     }
