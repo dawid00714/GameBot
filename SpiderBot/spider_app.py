@@ -12,7 +12,7 @@ import spider_models
 from spider_agent import SpiderAgent, SpiderAgentError
 from spider_windows import WindowAutomationError, list_windows
 
-app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="3.1.0")
+app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="3.2.0")
 agent = SpiderAgent()
 agent_lock = threading.Lock()
 run_stop = threading.Event()
@@ -110,7 +110,7 @@ def index():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "version": "3.1.0", "windows_agent": True}
+    return {"ok": True, "version": "3.2.0", "windows_agent": True}
 
 
 @app.get("/api/windows")
@@ -277,7 +277,7 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
     <h1><span class="pink">Laya</span> / <span class="cyan">TypeSafe Jev</span> · Windows Spider Agent</h1>
     <div class="muted">Eigene virtuelle Maus · Drag mit gedrückter linker Taste · Live-Screenshot · selbstlernende Strategie</div>
   </div>
-  <div class="small muted">Build 3.1</div>
+  <div class="small muted">Build 3.2</div>
 </header>
 
 <main>
@@ -289,7 +289,7 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
           <span id="modelBadge" class="badge">Laya</span>
           <span id="readerBadge" class="badge">Vision: —</span>
         </div>
-        <div class="small muted">Klick auf das Bild = Position für „Neue Karten“ setzen</div>
+        <div class="small muted">Stock und Kartenpositionen werden jetzt automatisch erkannt</div>
       </div>
       <img id="frame" alt="Live-Screenshot des ausgewählten Solitaire-Fensters">
     </div>
@@ -329,21 +329,19 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
     </section>
 
     <section class="card panel">
-      <h2>3 · Virtuelle Maus / Stock</h2>
-      <div class="grid3">
-        <div><label>Stock X</label><input id="stockX" type="number" min="0" max="1" step="0.001" value="0.820" style="width:100%"></div>
-        <div><label>Stock Y</label><input id="stockY" type="number" min="0" max="1" step="0.001" value="0.780" style="width:100%"></div>
+      <h2>3 · Maus / Stock</h2>
+      <div class="grid2">
         <div><label>Wartezeit pro Aktion</label><select id="delay"><option value=".45">0,45 s</option><option value=".85" selected>0,85 s</option><option value="1.2">1,2 s</option><option value="1.8">1,8 s</option></select></div>
+        <div><label>Mausmodus</label>
+          <select id="inputMode">
+            <option value="auto" selected>Auto – zuverlässig</option>
+            <option value="background">Nur Hintergrundmaus</option>
+            <option value="system">Nur Windows-Systemmaus</option>
+          </select>
+        </div>
       </div>
-      <div style="margin-top:9px">
-        <label>Mausmodus</label>
-        <select id="inputMode">
-          <option value="auto" selected>Auto – erst virtuelle Hintergrundmaus, dann zuverlässiger Fallback</option>
-          <option value="background">Nur virtuelle Hintergrundmaus</option>
-          <option value="system">Nur Windows-Systemmaus</option>
-        </select>
-      </div>
-      <div class="small muted" style="margin-top:8px">Die markierte Stelle aus deinem Screenshot ist als Ausgangspunkt voreingestellt. Für exakte Kalibrierung direkt auf den Kartenstapel im Live-Bild klicken. Wenn Microsoft Solitaire Hintergrund-Mausnachrichten ignoriert, nutzt „Auto“ kurz die Windows-Maus und setzt den Zeiger danach zurück.</div>
+      <div id="stockStatus" class="small muted" style="margin-top:8px">Stock wird automatisch gesucht…</div>
+      <div class="small muted" style="margin-top:5px">Keine manuelle Stock-Kalibrierung mehr: der violette Kartenstapel wird im Spielfenster automatisch gesucht. „Auto“ verwendet zuerst Hintergrund-Eingabe und bei Bedarf den zuverlässigen Windows-Maus-Fallback.</div>
     </section>
 
     <section class="card panel">
@@ -424,8 +422,6 @@ async function saveConfig(){
     input_mode:$('inputMode').value
   };
   await api('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-  const stock={x:parseFloat($('stockX').value),y:parseFloat($('stockY').value)};
-  await api('/api/stock-point',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(stock)});
 }
 
 async function saveKey(){
@@ -511,6 +507,8 @@ async function refreshStatus(){
       const concise={
         reader:d.state.reader,
         stock_available:d.state.stock_available,
+        stock_point:d.state.stock_point,
+        legal_actions_detected:d.legal_actions_detected,
         columns:d.state.columns.map(c=>({
           column:c.index+1,
           hidden:c.hidden_above,
@@ -523,9 +521,11 @@ async function refreshStatus(){
     $('actionDump').textContent=d.last_action?JSON.stringify(d.last_action,null,2):'Noch keine Aktion.';
     $('learningDump').textContent=JSON.stringify(d.learning,null,2);
 
-    $('stockX').value=Number(d.config.stock_x).toFixed(3);
-    $('stockY').value=Number(d.config.stock_y).toFixed(3);
     if(d.config.input_mode) $('inputMode').value=d.config.input_mode;
+    const sp=d.state?.stock_point;
+    $('stockStatus').textContent=sp
+      ? 'Stock automatisch erkannt: X '+Number(sp[0]).toFixed(3)+' · Y '+Number(sp[1]).toFixed(3)
+      : 'Stock aktuell nicht sicher erkannt; der Agent probiert bei Bedarf den letzten gültigen Punkt.';
   }catch(e){
     $('mainStatus').textContent='Serverfehler';
     $('error').textContent=e.message;
@@ -536,18 +536,6 @@ function refreshFrame(){
   if(!statusData?.window) return;
   $('frame').src='/api/frame.jpg?t='+Date.now();
 }
-
-$('frame').addEventListener('click',async e=>{
-  const rect=e.currentTarget.getBoundingClientRect();
-  const x=(e.clientX-rect.left)/rect.width;
-  const y=(e.clientY-rect.top)/rect.height;
-  $('stockX').value=x.toFixed(3);
-  $('stockY').value=y.toFixed(3);
-  try{
-    await api('/api/stock-point',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({x,y})});
-    $('error').textContent='Stock-Punkt gesetzt: '+x.toFixed(3)+', '+y.toFixed(3);
-  }catch(err){$('error').textContent=err.message}
-});
 
 $('refreshWindows').addEventListener('click',refreshWindows);
 $('selectWindow').addEventListener('click',selectWindow);
