@@ -394,6 +394,23 @@ class WindowController:
             "Die echte Maus wurde nicht bewegt."
         )
 
+    def _prepare_real_mouse_window(self) -> None:
+        """Bring Solitaire to the foreground before real SendInput.
+
+        Real system mouse input is delivered to whatever is actually under the
+        cursor, so the selected game window must be visible and foreground.
+        Alt+L remains a system-wide hotkey even while Solitaire has focus.
+        """
+        try:
+            if win32gui.IsIconic(self.hwnd):
+                win32gui.ShowWindow(self.hwnd, win32con.SW_RESTORE)
+            win32gui.SetForegroundWindow(self.hwnd)
+            time.sleep(0.12)
+        except Exception as exc:
+            raise WindowAutomationError(
+                f"Solitaire konnte fuer echte Maussteuerung nicht aktiviert werden: {exc}"
+            ) from exc
+
     def held_mouse_click(self, x: float, y: float, hold_ms: int = 90) -> dict[str, Any]:
         """Click stock.
 
@@ -401,6 +418,7 @@ class WindowController:
         Otherwise it stays on the legacy background-message path.
         """
         if real_mouse_input_enabled():
+            self._prepare_real_mouse_window()
             info = self.info
             sx = info.left + int(round(x))
             sy = info.top + int(round(y))
@@ -458,6 +476,7 @@ class WindowController:
         Host mode never uses SendInput and therefore never moves the host mouse.
         """
         if real_mouse_input_enabled():
+            self._prepare_real_mouse_window()
             info = self.info
             sx = info.left + int(round(start[0]))
             sy = info.top + int(round(start[1]))
