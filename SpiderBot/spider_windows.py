@@ -335,6 +335,186 @@ class WindowController:
             "Die echte Maus wurde nicht bewegt."
         )
 
+    def _uia_candidates_at(
+        self,
+        client_point: tuple[float, float],
+    ) -> list[Any]:
+        """Return UIA wrappers under a client point, smallest first.
+
+        UI Automation actions do not use the physical mouse and do not require
+        SetCursorPos/SendInput. This is therefore the preferred control path for
+        Microsoft Solitaire when the app exposes actionable accessibility peers.
+        """
+        try:
+            from pywinauto import Desktop
+        except Exception as exc:
+            raise WindowAutomationError(f"pywinauto/UIA ist nicht verfügbar: {exc}") from exc
+
+        x, y = int(round(client_point[0])), int(round(client_point[1]))
+        screen = win32gui.ClientToScreen(self.hwnd, (x, y))
+        sx, sy = screen
+
+        try:
+            root = Desktop(backend="uia").window(handle=self.hwnd)
+            wrappers = [root] + list(root.descendants())
+        except Exception as exc:
+            raise WindowAutomationError(
+                f"UIA-Baum des Solitaire-Fensters konnte nicht gelesen werden: {exc}"
+            ) from exc
+
+        candidates: list[tuple[int, Any]] = []
+        for wrapper in wrappers:
+            try:
+                rect = wrapper.rectangle()
+                if rect.left <= sx < rect.right and rect.top <= sy < rect.bottom:
+                    area = max(1, (rect.right - rect.left) * (rect.bottom - rect.top))
+                    candidates.append((area, wrapper))
+            except Exception:
+                continue
+
+        candidates.sort(key=lambda item: item[0])
+        return [w for _area, w in candidates]
+
+    @staticmethod
+    def _uia_action(wrapper: Any, source: bool) -> tuple[bool, str]:
+        """Try non-pointer UIA actions on one wrapper."""
+        # A source card should preferably become selected first. A destination
+        # should preferably be invoked. Both operations are accessibility
+        # patterns, not simulated mouse input.
+        order = ("select", "invoke", "legacy") if source else ("invoke", "select", "legacy")
+
+        for action in order:
+            try:
+                if action == "select":
+                    wrapper.select()
+                    return True, "SelectionItem.Select"
+                if action == "invoke":
+                    wrapper.invoke()
+                    return True, "InvokePattern.Invoke"
+                if action == "legacy":
+                    iface = wrapper.iface_legacy_iaccessible
+                    iface.DoDefaultAction()
+                    return True, "LegacyIAccessible.DoDefaultAction"
+            except Exception:
+                continue
+        return False, ""
+
+    def uia_activate_at(
+        self,
+        client_point: tuple[float, float],
+        *,
+        source: bool,
+    ) -> dict[str, Any]:
+        attempts: list[str] = []
+        for wrapper in self._uia_candidates_at(client_point):
+            try:
+                info = wrapper.element_info
+                label = f"{getattr(info, 'control_type', '')}:{getattr(info, 'name', '')}"
+            except Exception:
+                label = repr(wrapper)
+
+            ok, method = self._uia_action(wrapper, source=source)
+            attempts.append(label)
+            if ok:
+                result = {
+                    "ok": True,
+                    "method": method,
+                    "element": label,
+                    "physical_mouse_touched": False,
+                    "foreground_changed": False,
+                }
+                self.last_input_target = {
+                    "mode": "uia",
+                    "element": label,
+                    "method": method,
+                }
+                return result
+
+        return {
+            "ok": False,
+            "method": None,
+            "element": None,
+            "attempts": attempts[:12],
+            "physical_mouse_touched": False,
+            "foreground_changed": False,
+        }
+
+    def uia_move(
+        self,
+        start: tuple[float, float],
+        end: tuple[float, float],
+    ) -> dict[str, Any]:
+        """Try a card move entirely through accessibility patterns."""
+        source_result = self.uia_activate_at(start, source=True)
+        if not source_result["ok"]:
+            return {
+                "ok": False,
+                "stage": "source",
+                "source": source_result,
+                "physical_mouse_touched": False,
+                "foreground_changed": False,
+            }
+
+        time.sleep(0.10)
+        target_result = self.uia_activate_at(end, source=False)
+        if not target_result["ok"]:
+            return {
+                "ok": False,
+                "stage": "target",
+                "source": source_result,
+                "target": target_result,
+                "physical_mouse_touched": False,
+                "foreground_changed": False,
+            }
+
+        return {
+            "ok": True,
+            "stage": "complete",
+            "source": source_result,
+            "target": target_result,
+            "physical_mouse_touched": False,
+            "foreground_changed": False,
+        }
+
+    def uia_invoke_stock(
+        self,
+        fallback_point: tuple[float, float],
+    ) -> dict[str, Any]:
+        """Invoke the stock/new-cards control without pointer injection."""
+        try:
+            from pywinauto import Desktop
+            root = Desktop(backend="uia").window(handle=self.hwnd)
+            names = ("neu", "neue karten", "deal", "stock", "new")
+            matches: list[Any] = []
+            for wrapper in root.descendants():
+                try:
+                    name = (wrapper.element_info.name or "").strip().lower()
+                except Exception:
+                    continue
+                if name and any(token == name or token in name for token in names):
+                    matches.append(wrapper)
+
+            for wrapper in matches:
+                ok, method = self._uia_action(wrapper, source=False)
+                if ok:
+                    label = f"{wrapper.element_info.control_type}:{wrapper.element_info.name}"
+                    self.last_input_target = {
+                        "mode": "uia",
+                        "element": label,
+                        "method": method,
+                    }
+                    return {
+                        "ok": True,
+                        "method": method,
+                        "element": label,
+                        "physical_mouse_touched": False,
+                        "foreground_changed": False,
+                    }
+        except Exception:
+            pass
+
+        return self.uia_activate_at(fallback_point, source=False)
+
     def virtual_click(self, x: float, y: float, hold_ms: int = 70) -> None:
         point_client = (float(x), float(y))
         target = self._background_target(point_client)
@@ -404,7 +584,7 @@ class WindowController:
 
     def input_status(self) -> dict[str, Any]:
         return {
-            "mode": "background_only",
+            "mode": "uia_then_background_messages",
             "physical_mouse_touched": False,
             "foreground_changed": False,
             "target": self.last_input_target,
