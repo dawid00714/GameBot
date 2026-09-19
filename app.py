@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from threading import Lock
+import copy
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
@@ -24,6 +25,7 @@ class Game:
         self.last_move = None
         self.game_over = False
         self.winner = None
+        self.revision = 0
 
     def snapshot(self) -> dict:
         moves = engine.legal_moves(self.board, self.turn) if not self.game_over else []
@@ -37,6 +39,7 @@ class Game:
             "last_ai": self.last_ai,
             "game_over": self.game_over,
             "winner": self.winner,
+            "revision": self.revision,
         }
 
     def _finish_if_needed(self):
@@ -59,24 +62,20 @@ class Game:
         self.board = engine.apply_move(self.board, move)
         self.last_move = {"side": engine.BLACK, "id": move.id, "notation": engine.move_notation(move)}
         self.turn = engine.RED
+        self.revision += 1
         self._finish_if_needed()
 
-    def ai_move(self):
+    def commit_ai_move(self, ai_move: engine.Move, debug: dict):
         if self.game_over:
             return
         if self.turn != engine.RED:
             raise ValueError("It is not the AI turn")
 
-        ai_moves = engine.legal_moves(self.board, engine.RED)
-        if not ai_moves:
-            self._finish_if_needed()
-            return
-
-        ai_move, debug = laya_player.choose_move(self.board, engine.RED, ai_moves)
         self.board = engine.apply_move(self.board, ai_move)
         self.last_ai = debug
         self.last_move = {"side": engine.RED, "id": ai_move.id, "notation": engine.move_notation(ai_move)}
         self.turn = engine.BLACK
+        self.revision += 1
         self._finish_if_needed()
 
 
@@ -125,27 +124,61 @@ def human_move(req: MoveRequest):
             raise HTTPException(status_code=400, detail=str(exc))
 
 
+def run_ai_turn() -> dict:
+    """Run slow Laya inference WITHOUT holding the game lock.
+
+    The previous implementation kept the lock while Laya loaded/inferred.
+    Reloading the browser then made /api/state wait for that same lock, which
+    produced an apparently empty board. We snapshot the position, release the
+    lock, ask Laya, then commit only if the game did not change meanwhile.
+    """
+    with lock:
+        if game.game_over:
+            return game.snapshot()
+        if game.turn != engine.RED:
+            raise ValueError("It is not the AI turn")
+
+        board_for_laya = copy.deepcopy(game.board)
+        ai_moves = engine.legal_moves(board_for_laya, engine.RED)
+        expected_revision = game.revision
+
+        if not ai_moves:
+            game._finish_if_needed()
+            return game.snapshot()
+
+    # IMPORTANT: no lock is held while the model downloads, loads or infers.
+    ai_move, debug = laya_player.choose_move(board_for_laya, engine.RED, ai_moves)
+
+    with lock:
+        # A new game or another move happened while Laya was thinking.
+        # Never apply a stale AI move to the new position.
+        if game.revision != expected_revision or game.turn != engine.RED or game.game_over:
+            return game.snapshot()
+
+        game.commit_ai_move(ai_move, debug)
+        return game.snapshot()
+
+
 @app.post("/api/ai-move")
 def ai_move():
-    with lock:
-        try:
-            game.ai_move()
-            return game.snapshot()
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+    try:
+        return run_ai_turn()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.post("/api/move")
 def make_move_compat(req: MoveRequest):
-    """Backward-compatible endpoint for older clients."""
-    with lock:
-        try:
+    """Backward-compatible endpoint for older browser versions."""
+    try:
+        with lock:
             game.human_move(req.move_id)
-            if not game.game_over:
-                game.ai_move()
-            return game.snapshot()
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+            after_human = game.snapshot()
+        if after_human["game_over"]:
+            return after_human
+        return run_ai_turn()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 HTML = r"""<!doctype html>
@@ -176,7 +209,7 @@ pre{margin:0;white-space:pre-wrap;word-break:break-word;background:#0b0d13;borde
 </head>
 <body>
 <header>
-  <div><h1><span class="brand">Laya</span> Checkers</h1><div class="tag">Du spielst Schwarz. Laya spielt Rot.</div></div>
+  <div><h1><span class="brand">Laya</span> Checkers</h1><div class="tag">Du spielst Schwarz. Laya spielt Rot. <strong>Build 1.2</strong></div></div>
   <div class="row"><span id="engineBadge" class="badge">Laya wartet</span><button onclick="newGame()">Neues Spiel</button></div>
 </header>
 <main>
@@ -340,13 +373,22 @@ async function executeMove(move){
 }
 
 async function load(){
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),8000);
   try{
-    state=await (await fetch('/api/state')).json();
+    const resp=await fetch('/api/state',{signal:controller.signal,cache:'no-store'});
+    if(!resp.ok) throw new Error('HTTP '+resp.status);
+    state=await resp.json();
     selected=null;
     render();
   }catch(err){
-    document.getElementById('status').textContent='Server nicht erreichbar.';
-    document.getElementById('debug').textContent=String(err);
+    document.getElementById('status').textContent='Spielstatus konnte nicht geladen werden.';
+    document.getElementById('debug').textContent=
+      (err && err.name==='AbortError')
+        ? 'Die API antwortet nicht innerhalb von 8 Sekunden. Server im Terminal mit Strg+C stoppen und start.bat neu starten.'
+        : 'Fehler beim Laden: '+String(err);
+  }finally{
+    clearTimeout(timer);
   }
 }
 
