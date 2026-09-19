@@ -14,7 +14,7 @@ from spider_agent import SpiderAgent, SpiderAgentError
 from spider_state import ocr_status, warm_ocr
 from spider_windows import WindowAutomationError, list_windows
 
-app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="4.3.0")
+app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="4.4.0")
 agent = SpiderAgent()
 agent_lock = threading.RLock()
 step_lock = threading.Lock()
@@ -42,7 +42,7 @@ class ConfigRequest(BaseModel):
     depth: int = Field(default=3, ge=1, le=5)
     learning: bool = True
     action_delay: float = Field(default=0.85, ge=0.15, le=5.0)
-    vision_enabled: bool = True
+    vision_enabled: bool = False
     vision_model: str = ""
 
 
@@ -130,7 +130,7 @@ def index():
 def health():
     return {
         "ok": True,
-        "version": "4.3.0",
+        "version": "4.4.0",
         "windows_agent": True,
         "ocr_fallback": ocr_status(),
     }
@@ -349,7 +349,7 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
     <h1><span class="pink">Laya</span> / <span class="cyan">TypeSafe Jev</span> · Windows Spider Agent</h1>
     <div class="muted">Nur Hintergrund-Eingabe · echte Maus bleibt unberührt · kein Fokuswechsel · Live-Screenshot</div>
   </div>
-  <div class="small muted">Build 4.3</div>
+  <div class="small muted">Build 4.4</div>
 </header>
 
 <main>
@@ -400,13 +400,13 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
       <div id="modelStatus" class="small muted" style="margin-top:8px"></div>
       <hr>
       <div class="row">
-        <label class="check"><input id="visionEnabled" type="checkbox" checked> Ollama-Vision übernimmt die Kartenerkennung</label>
+        <label class="check"><input id="visionEnabled" type="checkbox"> Ollama-Vision zusätzlich verwenden (langsamer)</label>
       </div>
       <div class="row" style="margin-top:8px">
         <select id="visionModel" style="flex:1"><option value="">Vision-Modelle laden…</option></select>
         <button id="refreshOllama">Ollama aktualisieren</button>
       </div>
-      <div id="ollamaStatus" class="small muted" style="margin-top:7px">Schnellmodus: kleinstes lokales Vision-Modell wird bevorzugt; Denken ist deaktiviert. OCR nur Notfall-Fallback.</div>
+      <div id="ollamaStatus" class="small muted" style="margin-top:7px">Standard: FastOCR liest nur die 10 Karten-Spalten. Ollama ist optional für schwierige Stellungen.</div>
     </section>
 
     <section class="card panel">
@@ -419,7 +419,7 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
         </div>
       </div>
       <div id="stockStatus" class="small muted" style="margin-top:8px">Stock wird automatisch gesucht…</div>
-      <div class="small muted" style="margin-top:5px">SpiderBot versucht zuerst Windows UI Automation. Wenn das keine Karte verschiebt, nutzt er Spider-Tastaturnavigation (Pfeiltasten + Enter) als Hintergrund-Nachrichten und erst danach WM_MOUSE. Echte Maus und echte Tastatur werden nie übernommen.</div>
+      <div class="small muted" style="margin-top:5px">Kartenerkennung läuft standardmäßig über FastOCR auf einer kompakten 10-Spalten-Ansicht statt über Vollbild-OCR oder ein langsames Vision-LLM. Für die Eingabe versucht SpiderBot UI Automation, Hintergrund-Tastatur und danach WM_MOUSE. Echte Maus und Tastatur werden nie übernommen.</div>
     </section>
 
     <section class="card panel">
@@ -541,9 +541,7 @@ async function refreshOllama(){
         .sort((a,b)=>a.score-b.score);
       if(ranked.length) sel.value=ranked[0].name;
     }
-    $('visionEnabled').checked=true;
-    $('ollamaStatus').innerHTML='<span class="ok">'+data.vision_models.length+' Vision-Modell(e) erkannt · Ollama übernimmt Kartenlesen.</span>';
-    try{ await saveConfig(); }catch(_){}
+    $('ollamaStatus').innerHTML='<span class="ok">'+data.vision_models.length+' Vision-Modell(e) erkannt · optional verfügbar.</span>';
   }catch(e){
     sel.innerHTML='<option value="">Ollama nicht erreichbar</option>';
     $('ollamaStatus').innerHTML='<span class="bad">'+e.message+'</span>';
@@ -627,7 +625,9 @@ async function refreshStatus(){
     $('runBadge').textContent=d.runtime.running?'läuft':'gestoppt';
     $('runBadge').className='badge '+(d.runtime.running?'ok':'');
     $('modelBadge').textContent=d.config.model==='laya'?'Laya':'TypeSafe/Jev';
-    $('readerBadge').textContent='Kartenleser: '+(d.config.vision_enabled && d.config.vision_model ? 'Ollama '+d.config.vision_model : (d.state?.reader||'—'));
+    $('readerBadge').textContent='Kartenleser: '+(d.state?.reader||(
+      d.config.vision_enabled && d.config.vision_model ? 'Ollama '+d.config.vision_model : 'FastOCR'
+    ));
 
     const ls=d.laya;
     const ts=d.typesafe;
