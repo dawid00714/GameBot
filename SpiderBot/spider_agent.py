@@ -7,6 +7,7 @@ from typing import Any
 import cv2
 
 import spider_models
+import spider_ollama
 from spider_learning import SpiderLearning
 from spider_solver import SpiderAction, add_lookahead, generate_actions, state_signature
 from spider_state import SpiderState, read_state
@@ -27,6 +28,8 @@ class SpiderConfig:
     learning: bool = True
     action_delay: float = 0.85
     input_mode: str = "background"
+    vision_enabled: bool = False
+    vision_model: str = ""
 
 
 class SpiderAgent:
@@ -38,6 +41,7 @@ class SpiderAgent:
         self.last_action: dict[str, Any] | None = None
         self.last_error: str | None = None
         self.last_frame = None
+        self.last_vision: dict[str, Any] | None = None
         self.last_action_count = 0
         self.moves = 0
         self.running = False
@@ -55,6 +59,7 @@ class SpiderAgent:
         self.last_error = None
         self.last_state = None
         self.last_frame = None
+        self.last_vision = None
 
     def set_model(self, model: str) -> None:
         name = model.strip().lower()
@@ -76,6 +81,8 @@ class SpiderAgent:
         learning: bool | None = None,
         action_delay: float | None = None,
         input_mode: str | None = None,
+        vision_enabled: bool | None = None,
+        vision_model: str | None = None,
     ) -> None:
         if depth is not None:
             self.config.depth = max(1, min(int(depth), 5))
@@ -86,6 +93,10 @@ class SpiderAgent:
         # SpiderBot is intentionally background-only. It must never move the
         # user's real cursor or activate/raise the game window.
         self.config.input_mode = "background"
+        if vision_enabled is not None:
+            self.config.vision_enabled = bool(vision_enabled)
+        if vision_model is not None:
+            self.config.vision_model = str(vision_model).strip()
 
     def reset_episode(self) -> None:
         self.moves = 0
@@ -118,6 +129,21 @@ class SpiderAgent:
         if state.stock_point is not None:
             self.config.stock_x = float(state.stock_point[0])
             self.config.stock_y = float(state.stock_point[1])
+
+        self.last_vision = None
+        if self.config.vision_enabled and self.config.vision_model:
+            try:
+                hint = spider_ollama.analyze_spider(frame, self.config.vision_model)
+                self.last_vision = spider_ollama.apply_hint(state, hint)
+            except Exception as exc:
+                self.last_vision = {
+                    "model": self.config.vision_model,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+                state.diagnostics.append(
+                    "Ollama Vision-Fehler: " + self.last_vision["error"]
+                )
+
         self.last_state = state
         self.last_frame = frame
         return state, frame
@@ -378,6 +404,8 @@ class SpiderAgent:
                 "input_mode": "background_only",
                 "physical_mouse_touched": False,
                 "foreground_window_changed": False,
+                "vision_enabled": self.config.vision_enabled,
+                "vision_model": self.config.vision_model,
                 "stock_deals_used": self.stock_deals_used,
                 "stock_failed_clicks": self.stock_failed_clicks,
             },
@@ -388,6 +416,7 @@ class SpiderAgent:
             "game_won": self.game_won,
             "last_error": self.last_error,
             "last_action": self.last_action,
+            "last_vision": self.last_vision,
             "state": self.last_state.to_dict() if self.last_state else None,
             "laya": spider_models.laya_status(),
             "typesafe": spider_models.typesafe_status(),
