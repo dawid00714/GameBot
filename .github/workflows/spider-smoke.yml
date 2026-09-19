@@ -22,3 +22,20 @@ jobs:
         run: |
           python -c "import re, pathlib; s=pathlib.Path('SpiderBot/spider_app.py').read_text(encoding='utf-8'); m=re.search(r'<script>(.*?)</script>', s, re.S); assert m, 'script block missing'; pathlib.Path('spider-ui.js').write_text(m.group(1), encoding='utf-8')"
           node --check spider-ui.js
+      - name: Check VM PowerShell scripts
+        shell: pwsh
+        run: |
+          $files = @(
+            'SpiderBot/create_windows_vm.ps1',
+            'SpiderBot/finish_vm_setup.ps1',
+            'SpiderBot/vm_guest_bootstrap.ps1'
+          )
+          foreach ($f in $files) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($f, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error "$f : $($_.Message)" }
+              exit 1
+            }
+          }
