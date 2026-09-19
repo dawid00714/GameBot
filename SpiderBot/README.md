@@ -117,3 +117,10 @@ Ab Build 3.9 versucht SpiderBot Kartenaktionen zuerst über Windows UI Automatio
 Diese Methoden bewegen die echte Maus nicht und holen das Spiel nicht in den Vordergrund.
 
 Erst wenn UIA keine nutzbare Aktion liefert, wird der ältere Hintergrund-`WM_MOUSE`-Pfad versucht. Nach jeder Aktion wird der erkannte Karten-Zustand erneut gelesen; ein bloßer Auswahlrahmen zählt nicht als erfolgreicher Zug.
+
+
+## Hintergrund-Tastaturnavigation
+
+Ab Build 4.0 hat SpiderBot einen dritten mausfreien Eingabepfad. Wenn UI Automation keine echte Kartenbewegung ausführt und WM_MOUSE von Microsoft Solitaire blockiert wird, versucht der Agent die eingebaute Spider-Tastaturnavigation mit Pfeiltasten und Enter. Die Tasten werden als Fensternachrichten an Solitaire gesendet; die physische Tastatur und Maus des Benutzers werden nicht übernommen.
+
+Jeder Versuch wird danach durch erneutes Einlesen des tatsächlichen Kartenbretts verifiziert. Ein bloßer Auswahlrahmen zählt nicht als Zug.
