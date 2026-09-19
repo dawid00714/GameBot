@@ -61,10 +61,17 @@ class Game:
         self.turn = engine.RED
         self._finish_if_needed()
 
+    def ai_move(self):
         if self.game_over:
             return
+        if self.turn != engine.RED:
+            raise ValueError("It is not the AI turn")
 
         ai_moves = engine.legal_moves(self.board, engine.RED)
+        if not ai_moves:
+            self._finish_if_needed()
+            return
+
         ai_move, debug = laya_player.choose_move(self.board, engine.RED, ai_moves)
         self.board = engine.apply_move(self.board, ai_move)
         self.last_ai = debug
@@ -103,11 +110,39 @@ def new_game():
         return game.snapshot()
 
 
-@app.post("/api/move")
-def make_move(req: MoveRequest):
+@app.post("/api/human-move")
+def human_move(req: MoveRequest):
+    """Apply only the human move and return immediately.
+
+    Keeping the Laya inference in a separate request lets the browser render
+    the human piece movement before the model is downloaded/loaded or thinks.
+    """
     with lock:
         try:
             game.human_move(req.move_id)
+            return game.snapshot()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/ai-move")
+def ai_move():
+    with lock:
+        try:
+            game.ai_move()
+            return game.snapshot()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/move")
+def make_move_compat(req: MoveRequest):
+    """Backward-compatible endpoint for older clients."""
+    with lock:
+        try:
+            game.human_move(req.move_id)
+            if not game.game_over:
+                game.ai_move()
             return game.snapshot()
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
@@ -128,8 +163,8 @@ main{max-width:1180px;margin:auto;padding:18px 24px 40px;display:grid;grid-templ
 .card{background:rgba(18,20,29,.92);border:1px solid var(--line);border-radius:18px;box-shadow:0 24px 70px rgba(0,0,0,.28)}
 .board-wrap{padding:16px}.board{aspect-ratio:1;display:grid;grid-template-columns:repeat(8,1fr);overflow:hidden;border-radius:12px;border:1px solid #000}
 .sq{position:relative;display:grid;place-items:center;cursor:default;user-select:none}.sq.light{background:var(--light)}.sq.dark{background:var(--dark)}.sq.clickable{cursor:pointer}
-.sq.selected{outline:5px solid var(--accent);outline-offset:-5px}.sq.target:after{content:"";width:22%;height:22%;border-radius:50%;background:rgba(255,255,255,.55);box-shadow:0 0 0 5px rgba(236,59,189,.28)}
-.piece{width:72%;height:72%;border-radius:50%;display:grid;place-items:center;box-shadow:inset 0 0 0 4px rgba(255,255,255,.12),0 8px 16px rgba(0,0,0,.35);font-size:28px;font-weight:800}
+.sq.selected{outline:5px solid var(--accent);outline-offset:-5px}.sq.target:after{content:"";pointer-events:none;width:22%;height:22%;border-radius:50%;background:rgba(255,255,255,.55);box-shadow:0 0 0 5px rgba(236,59,189,.28)}
+.piece{width:72%;height:72%;border-radius:50%;display:grid;place-items:center;box-shadow:inset 0 0 0 4px rgba(255,255,255,.12),0 8px 16px rgba(0,0,0,.35);font-size:28px;font-weight:800}.piece[draggable="true"]{cursor:grab}.piece[draggable="true"]:active{cursor:grabbing}
 .piece.black{background:#111;color:#eee;border:2px solid #666}.piece.red{background:#bf2541;color:#fff;border:2px solid #f08396}.king:after{content:"♛";font-size:.8em}
 .side{padding:20px}.status{font-size:18px;font-weight:700;margin-bottom:4px}.muted{color:var(--muted)}
 button{background:var(--accent);border:0;color:white;font-weight:750;border-radius:11px;padding:10px 14px;cursor:pointer}button.secondary{background:#252938}
@@ -152,7 +187,7 @@ pre{margin:0;white-space:pre-wrap;word-break:break-word;background:#0b0d13;borde
       <div id="substatus" class="muted">Schlagen ist Pflicht.</div>
       <div class="panel" style="padding:18px 0 0;margin-top:12px;border-top:1px solid var(--line)">
         <h2>Bedienung</h2>
-        <div class="muted">Klicke zuerst deinen schwarzen Stein und danach das markierte Zielfeld. Bei Mehrfachschlägen wählt das Zielfeld die vollständige Schlagfolge.</div>
+        <div class="muted">Klicke zuerst deinen schwarzen Stein und danach das markierte Zielfeld. Du kannst die schwarzen Steine jetzt auch per Drag & Drop ziehen. Beim ersten KI-Zug kann das Laden von Laya länger dauern.</div>
       </div>
     </section>
     <section class="card panel">
@@ -162,16 +197,21 @@ pre{margin:0;white-space:pre-wrap;word-break:break-word;background:#0b0d13;borde
   </aside>
 </main>
 <script>
-let state=null, selected=null;
+let state=null, selected=null, busy=false, draggedFrom=null;
 
 const pieceClass = p => p.toLowerCase()==='b' ? 'black' : 'red';
 
 function humanMoves(){
-  if(!state || state.turn!=='black' || state.game_over) return [];
-  return state.legal_moves;
+  if(!state || state.turn!=='black' || state.game_over || busy) return [];
+  return state.legal_moves || [];
 }
 
 function movesFrom(r,c){ return humanMoves().filter(m=>m.start[0]===r && m.start[1]===c); }
+
+function findMoveTo(r,c){
+  if(!selected) return null;
+  return movesFrom(selected[0],selected[1]).find(m=>m.end[0]===r && m.end[1]===c) || null;
+}
 
 function render(){
   const board=document.getElementById('board'); board.innerHTML='';
@@ -191,15 +231,36 @@ function render(){
     if(p!=='.'){
       const el=document.createElement('div');
       el.className='piece '+pieceClass(p)+(p===p.toUpperCase()?' king':'');
+      if(hasOwn){
+        el.draggable=true;
+        el.addEventListener('dragstart', ev=>{
+          draggedFrom=[r,c];
+          selected=[r,c];
+          if(ev.dataTransfer) ev.dataTransfer.setData('text/plain', r+','+c);
+          setTimeout(render,0);
+        });
+        el.addEventListener('dragend', ()=>{ draggedFrom=null; });
+      }
       sq.appendChild(el);
     }
-    sq.onclick=()=>clickSquare(r,c);
+
+    sq.addEventListener('click', ()=>clickSquare(r,c));
+    sq.addEventListener('dragover', ev=>{
+      if(selected && selectedMoves.some(m=>m.end[0]===r && m.end[1]===c)) ev.preventDefault();
+    });
+    sq.addEventListener('drop', ev=>{
+      ev.preventDefault();
+      const move=findMoveTo(r,c);
+      draggedFrom=null;
+      if(move) executeMove(move);
+    });
     board.appendChild(sq);
   }
 
   const st=document.getElementById('status');
   if(state.game_over) st.textContent = state.winner==='black' ? 'Du hast gewonnen.' : 'Laya hat gewonnen.';
-  else st.textContent = state.turn==='black' ? 'Du bist am Zug.' : 'Laya denkt…';
+  else if(busy) st.textContent='Laya lädt / denkt…';
+  else st.textContent = state.turn==='black' ? 'Du bist am Zug.' : 'Laya ist am Zug.';
 
   if(state.last_move) document.getElementById('substatus').textContent='Letzter Zug: '+state.last_move.notation;
   if(state.last_ai){
@@ -214,24 +275,90 @@ function render(){
 }
 
 async function clickSquare(r,c){
-  if(!state || state.game_over || state.turn!=='black') return;
-  const from=movesFrom(r,c);
-  if(from.length){ selected=[r,c]; render(); return; }
-  if(!selected) return;
+  if(!state || state.game_over || state.turn!=='black' || busy) return;
 
-  const candidates=movesFrom(selected[0],selected[1]).filter(m=>m.end[0]===r && m.end[1]===c);
-  if(!candidates.length){ selected=null; render(); return; }
+  const from=movesFrom(r,c);
+  if(from.length){
+    selected=[r,c];
+    render();
+    return;
+  }
+
+  const move=findMoveTo(r,c);
+  if(move){
+    await executeMove(move);
+    return;
+  }
 
   selected=null;
-  document.getElementById('status').textContent='Laya denkt…';
-  const resp=await fetch('/api/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({move_id:candidates[0].id})});
-  const data=await resp.json();
-  if(!resp.ok){ alert(data.detail||'Zug fehlgeschlagen'); await load(); return; }
-  state=data; render();
+  render();
 }
 
-async function load(){ state=await (await fetch('/api/state')).json(); selected=null; render(); }
-async function newGame(){ state=await (await fetch('/api/new',{method:'POST'})).json(); selected=null; document.getElementById('debug').textContent='Noch kein KI-Zug.'; document.getElementById('engineBadge').textContent='Laya wartet'; render(); }
+async function executeMove(move){
+  if(busy) return;
+  busy=true;
+  selected=null;
+
+  try{
+    // 1) Human move is committed separately so it becomes visible immediately.
+    const humanResp=await fetch('/api/human-move',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({move_id:move.id})
+    });
+    const humanData=await humanResp.json();
+    if(!humanResp.ok) throw new Error(humanData.detail||'Menschlicher Zug fehlgeschlagen');
+
+    state=humanData;
+    busy=false;
+    render();
+
+    if(state.game_over) return;
+
+    // Give the browser a frame to paint the moved piece before Laya starts.
+    await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+
+    busy=true;
+    render();
+    document.getElementById('substatus').textContent='Dein Zug wurde ausgeführt. Laya lädt / denkt jetzt…';
+
+    const aiResp=await fetch('/api/ai-move',{method:'POST'});
+    const aiData=await aiResp.json();
+    if(!aiResp.ok) throw new Error(aiData.detail||'Laya-Zug fehlgeschlagen');
+
+    state=aiData;
+  }catch(err){
+    document.getElementById('debug').textContent='Fehler: '+(err && err.message ? err.message : String(err));
+    try{
+      state=await (await fetch('/api/state')).json();
+    }catch(_){}
+  }finally{
+    busy=false;
+    selected=null;
+    render();
+  }
+}
+
+async function load(){
+  try{
+    state=await (await fetch('/api/state')).json();
+    selected=null;
+    render();
+  }catch(err){
+    document.getElementById('status').textContent='Server nicht erreichbar.';
+    document.getElementById('debug').textContent=String(err);
+  }
+}
+
+async function newGame(){
+  if(busy) return;
+  state=await (await fetch('/api/new',{method:'POST'})).json();
+  selected=null;
+  busy=false;
+  document.getElementById('debug').textContent='Noch kein KI-Zug.';
+  document.getElementById('engineBadge').textContent='Laya wartet';
+  render();
+}
 
 load();
 </script>
