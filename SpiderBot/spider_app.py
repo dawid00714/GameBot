@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 import spider_models
 import spider_ollama
 from spider_agent import SpiderAgent, SpiderAgentError
+from spider_state import ocr_status, warm_ocr
 from spider_windows import WindowAutomationError, list_windows
 
 app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="4.2.0")
@@ -62,6 +63,10 @@ def _auto_select_solitaire() -> None:
 
 
 _auto_select_solitaire()
+
+# Warm RapidOCR in the background only as a safety fallback. This avoids a
+# 10-15 second pause later if Ollama returns an unusable board once.
+threading.Thread(target=warm_ocr, name="spider-ocr-warmup", daemon=True).start()
 
 
 def _runner() -> None:
@@ -123,7 +128,12 @@ def index():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "version": "4.2.0", "windows_agent": True}
+    return {
+        "ok": True,
+        "version": "4.2.0",
+        "windows_agent": True,
+        "ocr_fallback": ocr_status(),
+    }
 
 
 @app.get("/api/ollama/models")
