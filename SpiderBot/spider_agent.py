@@ -343,69 +343,58 @@ class SpiderAgent:
     ) -> tuple[bool, float, Any, str, dict[str, Any]]:
         ctl = self._require_controller()
 
-        start = None
-        end = None
-        if action.kind == "move":
-            start = self._source_point(state, action)
-            end = self._destination_point(state, action)
-
         stock_x, stock_y = (
             state.stock_point
             if state.stock_point is not None
             else (self.config.stock_x, self.config.stock_y)
         )
-        stock_client = ctl.normalized_to_client(stock_x, stock_y)
+
         debug: dict[str, Any] = {"attempts": []}
 
-        # 1) Preferred path: Windows UI Automation accessibility patterns.
-        # This performs Invoke/SelectionItem/Legacy actions and never touches
-        # the physical mouse or foreground window.
         try:
-            self._set_phase("input_uia", f"UIA-Aktion {action.notation()}")
             if action.kind == "deal":
-                uia = ctl.uia_invoke_stock(stock_client)
+                x, y = ctl.normalized_to_client(stock_x, stock_y)
+                self._set_phase("input_drag", "Stock: linke Taste drücken und loslassen")
+                result = ctl.held_mouse_click(x, y, hold_ms=110)
+                input_used = "held_mouse_click"
             else:
-                assert start is not None and end is not None
-                uia = ctl.uia_move(start, end)
-            debug["attempts"].append({"mode": "uia", "result": uia})
+                start = self._source_point(state, action)
+                end = self._destination_point(state, action)
+                self._set_phase(
+                    "input_drag",
+                    f"Karte ziehen: DOWN → HALTEN+BEWEGEN → UP ({action.notation()})",
+                )
+                result = ctl.held_mouse_drag(
+                    start,
+                    end,
+                    duration_ms=900,
+                    steps=52,
+                )
+                input_used = "held_mouse_drag"
+
+            debug["attempts"].append({
+                "mode": input_used,
+                "result": result,
+            })
 
             time.sleep(self.config.action_delay)
             after = ctl.capture()
             diff = frame_difference(before, after)
-            if diff >= 0.0015:
-                return True, diff, after, "uia_accessibility", debug
+            return diff >= 0.0015, diff, after, input_used, debug
+
         except Exception as exc:
+            try:
+                after = ctl.capture()
+                diff = frame_difference(before, after)
+            except Exception:
+                after = before
+                diff = 0.0
+
             debug["attempts"].append({
-                "mode": "uia",
+                "mode": "held_mouse_drag",
                 "error": f"{type(exc).__name__}: {exc}",
             })
-
-        # 2) Secondary mouse-free path: background WM_MOUSE messages.
-        # Microsoft Solitaire may reject these; if it does, report that fact.
-        try:
-            self._set_phase("input_background", f"Background-Aktion {action.notation()}")
-            if action.kind == "deal":
-                ctl.click_normalized(stock_x, stock_y)
-            else:
-                assert start is not None and end is not None
-                ctl.virtual_drag(start, end, duration_ms=620, steps=40)
-
-            time.sleep(self.config.action_delay)
-            after = ctl.capture()
-            diff = frame_difference(before, after)
-            debug["attempts"].append({
-                "mode": "background_wm_mouse",
-                "screen_difference": round(diff, 6),
-            })
-            return diff >= 0.0015, diff, after, "background_wm_mouse", debug
-        except Exception as exc:
-            after = ctl.capture()
-            diff = frame_difference(before, after)
-            debug["attempts"].append({
-                "mode": "background_wm_mouse",
-                "error": f"{type(exc).__name__}: {exc}",
-            })
-            return False, diff, after, "no_mouse_free_input_accepted", debug
+            return False, diff, after, "held_mouse_drag_failed", debug
 
     def step(self) -> dict[str, Any]:
         self.last_error = None
@@ -508,79 +497,6 @@ class SpiderAgent:
 
         accepted = bool(changed_pixels and board_changed)
 
-        # If UIA only produced a visual selection highlight (or the WM_MOUSE
-        # route was rejected), try Spider's keyboard navigation before giving
-        # up. This still does not touch the user's real keyboard or mouse.
-        if not accepted:
-            ctl = self._require_controller()
-            self._set_phase(
-                "input_keyboard",
-                f"Tastatur-Navigation {selected.notation()} ohne echte Eingabegeräte",
-            )
-            try:
-                if selected.kind == "deal":
-                    keyboard_result = ctl.keyboard_spider_deal()
-                else:
-                    assert selected.source is not None
-                    assert selected.destination is not None
-                    assert selected.start_index is not None
-                    visible_count = len(state.columns[selected.source].cards)
-
-                    keyboard_result = ctl.keyboard_spider_move(
-                        selected.source,
-                        selected.destination,
-                        selected.start_index,
-                        visible_count,
-                        vertical_from_top=True,
-                    )
-
-                input_debug.setdefault("attempts", []).append(
-                    {"mode": "background_keyboard", "result": keyboard_result}
-                )
-                time.sleep(self.config.action_delay)
-
-                self._set_phase("verify_keyboard", "Tastatur-Zug verifizieren")
-                keyboard_frame = ctl.capture()
-                keyboard_state = self._verify_frame_state(keyboard_frame)
-                keyboard_sig = state_signature(keyboard_state)
-                keyboard_diff = frame_difference(before, keyboard_frame)
-
-                if keyboard_sig != sig:
-                    accepted = True
-                    board_changed = True
-                    diff = keyboard_diff
-                    input_used = "background_keyboard"
-                    next_state = keyboard_state
-                elif selected.kind == "move":
-                    # Try the opposite vertical normalization once. Microsoft
-                    # Solitaire versions differ in how Up/Down enter a column.
-                    keyboard_result_2 = ctl.keyboard_spider_move(
-                        selected.source,
-                        selected.destination,
-                        selected.start_index,
-                        visible_count,
-                        vertical_from_top=False,
-                    )
-                    input_debug.setdefault("attempts", []).append(
-                        {"mode": "background_keyboard_reverse", "result": keyboard_result_2}
-                    )
-                    time.sleep(self.config.action_delay)
-                    keyboard_frame_2 = ctl.capture()
-                    keyboard_state_2 = self._verify_frame_state(keyboard_frame_2)
-                    keyboard_sig_2 = state_signature(keyboard_state_2)
-                    keyboard_diff_2 = frame_difference(before, keyboard_frame_2)
-                    if keyboard_sig_2 != sig:
-                        accepted = True
-                        board_changed = True
-                        diff = keyboard_diff_2
-                        input_used = "background_keyboard_reverse"
-                        next_state = keyboard_state_2
-            except Exception as exc:
-                input_debug.setdefault("attempts", []).append({
-                    "mode": "background_keyboard",
-                    "error": f"{type(exc).__name__}: {exc}",
-                })
-
         if selected.kind == "deal":
             if accepted:
                 self.stock_deals_used += 1
@@ -592,7 +508,7 @@ class SpiderAgent:
             self.failed_actions.setdefault(sig, set()).add(selected.notation())
             self._set_phase(
                 "input_rejected",
-                "UIA, Hintergrundmaus und Hintergrund-Tastatur ohne Brettänderung",
+                "Drag wurde gesendet, aber das erkannte Brett hat sich nicht geändert",
             )
             self.last_action = {
                 "model": self.config.model,
@@ -606,10 +522,9 @@ class SpiderAgent:
                 "stock_failed_clicks": self.stock_failed_clicks,
                 "model_debug": model_debug,
                 "warning": (
-                    "SpiderBot hat UI Automation, Hintergrund-WM_MOUSE und "
-                    "Hintergrund-Tastaturnavigation versucht. Die echte Maus "
-                    "und Tastatur wurden nicht übernommen. Der erkannte "
-                    "Spielzustand hat sich nicht geändert."
+                    "Es wurde ausschließlich der verlangte Maus-Drag ausgeführt: "
+                    "linke Taste DOWN, während der gesamten Bewegung gehalten, "
+                    "am Ziel UP. Keine UIA-Auswahl und keine Tastaturnavigation."
                 ),
             }
             return self.status()
@@ -671,7 +586,7 @@ class SpiderAgent:
                 "stock_y": round(self.config.stock_y, 4),
                 "learning": self.config.learning,
                 "action_delay": self.config.action_delay,
-                "input_mode": "uia_then_background_messages",
+                "input_mode": "held_mouse_drag_only",
                 "physical_mouse_touched": False,
                 "physical_keyboard_touched": False,
                 "foreground_window_changed": False,
