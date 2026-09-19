@@ -3,7 +3,13 @@ from __future__ import annotations
 import ctypes
 import time
 
-from vm_guest_input import guest_real_input_enabled, real_guest_click, real_guest_drag
+from vm_guest_input import (
+    guest_real_input_enabled,
+    host_real_input_enabled,
+    real_mouse_input_enabled,
+    real_mouse_click,
+    real_mouse_drag,
+)
 from dataclasses import dataclass
 from typing import Any
 
@@ -394,13 +400,14 @@ class WindowController:
         In VM guest mode this is genuine Windows SendInput inside the VM.
         Otherwise it stays on the legacy background-message path.
         """
-        if guest_real_input_enabled():
+        if real_mouse_input_enabled():
             info = self.info
             sx = info.left + int(round(x))
             sy = info.top + int(round(y))
-            result = real_guest_click(sx, sy, hold_ms=hold_ms)
+            result = real_mouse_click(sx, sy, hold_ms=hold_ms)
+            mode = "vm_guest_sendinput_click" if guest_real_input_enabled() else "host_sendinput_click"
             self.last_input_target = {
-                "mode": "vm_guest_sendinput_click",
+                "mode": mode,
                 "hwnd": int(self.hwnd),
                 "screen": [sx, sy],
             }
@@ -450,20 +457,21 @@ class WindowController:
         only path here that Microsoft Solitaire receives as real pointer input.
         Host mode never uses SendInput and therefore never moves the host mouse.
         """
-        if guest_real_input_enabled():
+        if real_mouse_input_enabled():
             info = self.info
             sx = info.left + int(round(start[0]))
             sy = info.top + int(round(start[1]))
             ex = info.left + int(round(end[0]))
             ey = info.top + int(round(end[1]))
-            result = real_guest_drag(
+            result = real_mouse_drag(
                 (sx, sy),
                 (ex, ey),
                 duration_ms=duration_ms,
                 steps=steps,
             )
+            mode = "vm_guest_sendinput_drag" if guest_real_input_enabled() else "host_sendinput_drag"
             self.last_input_target = {
-                "mode": "vm_guest_sendinput_drag",
+                "mode": mode,
                 "hwnd": int(self.hwnd),
                 "start_screen": [sx, sy],
                 "end_screen": [ex, ey],
@@ -947,18 +955,23 @@ class WindowController:
         self.virtual_click(x, y)
 
     def input_status(self) -> dict[str, Any]:
+        if guest_real_input_enabled():
+            mode = "vm_guest_real_drag"
+            scope = "virtual-machine-guest-only"
+            touched = True
+        elif host_real_input_enabled():
+            mode = "host_real_mouse"
+            scope = "host-physical-mouse"
+            touched = True
+        else:
+            mode = "host_background_drag"
+            scope = "none"
+            touched = False
+
         return {
-            "mode": (
-                "vm_guest_real_drag"
-                if guest_real_input_enabled()
-                else "host_background_drag"
-            ),
-            "physical_mouse_touched": bool(guest_real_input_enabled()),
-            "physical_mouse_scope": (
-                "virtual-machine-guest-only"
-                if guest_real_input_enabled()
-                else "none"
-            ),
+            "mode": mode,
+            "physical_mouse_touched": touched,
+            "physical_mouse_scope": scope,
             "foreground_changed": False,
             "target": self.last_input_target,
         }
