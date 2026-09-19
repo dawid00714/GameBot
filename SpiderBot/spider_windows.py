@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ctypes
 import time
+
+from vm_guest_input import guest_real_input_enabled, real_guest_click, real_guest_drag
 from dataclasses import dataclass
 from typing import Any
 
@@ -387,7 +389,22 @@ class WindowController:
         )
 
     def held_mouse_click(self, x: float, y: float, hold_ms: int = 90) -> dict[str, Any]:
-        """Background left click: BUTTONDOWN -> hold -> BUTTONUP."""
+        """Click stock.
+
+        In VM guest mode this is genuine Windows SendInput inside the VM.
+        Otherwise it stays on the legacy background-message path.
+        """
+        if guest_real_input_enabled():
+            info = self.info
+            sx = info.left + int(round(x))
+            sy = info.top + int(round(y))
+            result = real_guest_click(sx, sy, hold_ms=hold_ms)
+            self.last_input_target = {
+                "mode": "vm_guest_sendinput_click",
+                "hwnd": int(self.hwnd),
+                "screen": [sx, sy],
+            }
+            return result
         point = (float(x), float(y))
         target = self._background_target(point)
         screen = win32gui.ClientToScreen(
@@ -427,11 +444,33 @@ class WindowController:
         duration_ms: int = 850,
         steps: int = 48,
     ) -> dict[str, Any]:
-        """Exact drag required by Spider: DOWN, hold through every MOVE, UP.
+        """Exact Spider drag.
 
-        The left-button bit MK_LBUTTON is present on every WM_MOUSEMOVE while
-        the card is being dragged. The physical Windows cursor is never moved.
+        VM guest mode uses real SendInput inside the isolated VM, which is the
+        only path here that Microsoft Solitaire receives as real pointer input.
+        Host mode never uses SendInput and therefore never moves the host mouse.
         """
+        if guest_real_input_enabled():
+            info = self.info
+            sx = info.left + int(round(start[0]))
+            sy = info.top + int(round(start[1]))
+            ex = info.left + int(round(end[0]))
+            ey = info.top + int(round(end[1]))
+            result = real_guest_drag(
+                (sx, sy),
+                (ex, ey),
+                duration_ms=duration_ms,
+                steps=steps,
+            )
+            self.last_input_target = {
+                "mode": "vm_guest_sendinput_drag",
+                "hwnd": int(self.hwnd),
+                "start_screen": [sx, sy],
+                "end_screen": [ex, ey],
+                "steps": int(steps),
+                "duration_ms": int(duration_ms),
+            }
+            return result
         target = self._background_target(start, end)
         sx, sy = start
         ex, ey = end
@@ -909,8 +948,17 @@ class WindowController:
 
     def input_status(self) -> dict[str, Any]:
         return {
-            "mode": "held_mouse_drag_only",
-            "physical_mouse_touched": False,
+            "mode": (
+                "vm_guest_real_drag"
+                if guest_real_input_enabled()
+                else "host_background_drag"
+            ),
+            "physical_mouse_touched": bool(guest_real_input_enabled()),
+            "physical_mouse_scope": (
+                "virtual-machine-guest-only"
+                if guest_real_input_enabled()
+                else "none"
+            ),
             "foreground_changed": False,
             "target": self.last_input_target,
         }
