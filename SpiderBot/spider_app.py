@@ -9,10 +9,11 @@ from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field
 
 import spider_models
+import spider_ollama
 from spider_agent import SpiderAgent, SpiderAgentError
 from spider_windows import WindowAutomationError, list_windows
 
-app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="3.3.0")
+app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="3.4.0")
 agent = SpiderAgent()
 agent_lock = threading.Lock()
 run_stop = threading.Event()
@@ -39,6 +40,8 @@ class ConfigRequest(BaseModel):
     depth: int = Field(default=3, ge=1, le=5)
     learning: bool = True
     action_delay: float = Field(default=0.85, ge=0.15, le=5.0)
+    vision_enabled: bool = False
+    vision_model: str = ""
 
 
 class StockPointRequest(BaseModel):
@@ -109,7 +112,15 @@ def index():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "version": "3.3.0", "windows_agent": True}
+    return {"ok": True, "version": "3.4.0", "windows_agent": True}
+
+
+@app.get("/api/ollama/models")
+def ollama_models():
+    try:
+        return spider_ollama.list_vision_models()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"{type(exc).__name__}: {exc}")
 
 
 @app.get("/api/windows")
@@ -141,6 +152,8 @@ def configure(req: ConfigRequest):
                 depth=req.depth,
                 learning=req.learning,
                 action_delay=req.action_delay,
+                vision_enabled=req.vision_enabled,
+                vision_model=req.vision_model,
             )
             return agent.status()
     except Exception as exc:
@@ -275,7 +288,7 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
     <h1><span class="pink">Laya</span> / <span class="cyan">TypeSafe Jev</span> · Windows Spider Agent</h1>
     <div class="muted">Nur Hintergrund-Eingabe · echte Maus bleibt unberührt · kein Fokuswechsel · Live-Screenshot</div>
   </div>
-  <div class="small muted">Build 3.3</div>
+  <div class="small muted">Build 3.4</div>
 </header>
 
 <main>
@@ -324,6 +337,15 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
         <button id="saveKey" class="cyan">API verbinden</button>
       </div>
       <div id="modelStatus" class="small muted" style="margin-top:8px"></div>
+      <hr>
+      <div class="row">
+        <label class="check"><input id="visionEnabled" type="checkbox"> Ollama-Vision als Bild-Hilfe verwenden</label>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <select id="visionModel" style="flex:1"><option value="">Vision-Modelle laden…</option></select>
+        <button id="refreshOllama">Ollama aktualisieren</button>
+      </div>
+      <div id="ollamaStatus" class="small muted" style="margin-top:7px">Lokale Vision-Modelle werden aus Ollama erkannt.</div>
     </section>
 
     <section class="card panel">
@@ -413,9 +435,42 @@ async function saveConfig(){
     model:$('model').value,
     depth:parseInt($('depth').value,10),
     learning:$('learning').checked,
-    action_delay:parseFloat($('delay').value)
+    action_delay:parseFloat($('delay').value),
+    vision_enabled:$('visionEnabled').checked,
+    vision_model:$('visionModel').value
   };
   await api('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+}
+
+async function refreshOllama(){
+  const sel=$('visionModel');
+  const previous=sel.value;
+  sel.innerHTML='<option value="">Suche lokale Vision-Modelle…</option>';
+  try{
+    const data=await api('/api/ollama/models');
+    sel.innerHTML='';
+    if(!data.vision_models?.length){
+      const o=document.createElement('option');
+      o.value='';
+      o.textContent='Keine Ollama-Vision-Modelle erkannt';
+      sel.appendChild(o);
+      $('ollamaStatus').innerHTML='<span class="warn">Ollama läuft, aber kein Vision-Modell wurde erkannt.</span>';
+      return;
+    }
+    for(const m of data.vision_models){
+      const o=document.createElement('option');
+      o.value=m.name;
+      let label=m.name;
+      if(m.parameter_size) label+=' · '+m.parameter_size;
+      o.textContent=label;
+      sel.appendChild(o);
+    }
+    if(previous && [...sel.options].some(o=>o.value===previous)) sel.value=previous;
+    $('ollamaStatus').innerHTML='<span class="ok">'+data.vision_models.length+' Vision-Modell(e) erkannt.</span>';
+  }catch(e){
+    sel.innerHTML='<option value="">Ollama nicht erreichbar</option>';
+    $('ollamaStatus').innerHTML='<span class="bad">'+e.message+'</span>';
+  }
 }
 
 async function saveKey(){
@@ -516,6 +571,17 @@ async function refreshStatus(){
     $('actionDump').textContent=d.last_action?JSON.stringify(d.last_action,null,2):'Noch keine Aktion.';
     $('learningDump').textContent=JSON.stringify(d.learning,null,2);
 
+    if(d.config.vision_enabled!==undefined) $('visionEnabled').checked=!!d.config.vision_enabled;
+    if(d.config.vision_model && [...$('visionModel').options].some(o=>o.value===d.config.vision_model)){
+      $('visionModel').value=d.config.vision_model;
+    }
+    if(d.last_vision){
+      $('ollamaStatus').textContent=d.last_vision.error
+        ? 'Ollama Vision Fehler: '+d.last_vision.error
+        : 'Ollama Vision: '+d.last_vision.model+' · Confidence '+Number(d.last_vision.confidence||0).toFixed(2)+
+          ' · angewendet: '+JSON.stringify(d.last_vision.applied_columns||[]);
+    }
+
     const sp=d.state?.stock_point;
     $('stockStatus').textContent=sp
       ? 'Stock automatisch erkannt: X '+Number(sp[0]).toFixed(3)+' · Y '+Number(sp[1]).toFixed(3)
@@ -533,6 +599,9 @@ function refreshFrame(){
 
 $('refreshWindows').addEventListener('click',refreshWindows);
 $('selectWindow').addEventListener('click',selectWindow);
+$('refreshOllama').addEventListener('click',refreshOllama);
+$('visionEnabled').addEventListener('change',saveConfig);
+$('visionModel').addEventListener('change',saveConfig);
 $('saveKey').addEventListener('click',saveKey);
 $('observe').addEventListener('click',observe);
 $('step').addEventListener('click',oneStep);
@@ -547,6 +616,7 @@ $('delay').addEventListener('change',saveConfig);
 $('learning').addEventListener('change',saveConfig);
 
 refreshWindows();
+refreshOllama();
 refreshStatus();
 frameTimer=setInterval(()=>{refreshStatus();refreshFrame()},1200);
 </script>
