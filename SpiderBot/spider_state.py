@@ -699,13 +699,28 @@ def read_state(
         diag.extend(fast_diag)
 
     if len(uia_cards) >= 6:
-        cards = uia_cards
-        reader = "uia+visual-gate"
+        ucols = _group_cards(uia_cards, width, height, None)
+        fcols = _group_cards(fast_cards, width, height, None) if fast_cards else []
+        uia_coverage = sum(1 for c in ucols if c.cards)
+        fast_coverage = sum(1 for c in fcols if c.cards)
+
+        # Coverage is more important than raw element count. "17 cards in
+        # 8 columns" is NOT a complete Spider board when the screenshot still
+        # shows cards in the missing columns.
+        if fast_cards and fast_coverage > uia_coverage:
+            cards = fast_cards
+            reader = "fastocr-preferred"
+            diag.append(
+                f"UIA verworfen: nur {uia_coverage}/10 Spalten belegt; "
+                f"FastOCR deckt {fast_coverage}/10 Spalten ab."
+            )
+        else:
+            cards = uia_cards
+            reader = "uia+visual-gate"
+
         if fast_cards:
             # Report obvious top-level disagreements. The hard pre-drag gate
             # below is authoritative before the mouse can move.
-            ucols = _group_cards(uia_cards, width, height, None)
-            fcols = _group_cards(fast_cards, width, height, None)
             conflicts = []
             for uc, fc in zip(ucols, fcols):
                 if uc.cards and fc.cards:
