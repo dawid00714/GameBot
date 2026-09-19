@@ -18,7 +18,7 @@ from spider_state import ocr_status, warm_ocr
 from spider_windows import WindowAutomationError, list_windows
 from vm_guest_input import clear_input_abort, request_input_abort
 
-app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="5.0.0")
+app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="5.1.0")
 agent = SpiderAgent()
 agent_lock = threading.RLock()
 step_lock = threading.Lock()
@@ -227,7 +227,7 @@ def index():
 def health():
     return {
         "ok": True,
-        "version": "5.0.0",
+        "version": "5.1.0",
         "windows_agent": True,
         "ocr_fallback": ocr_status(),
     }
@@ -434,7 +434,7 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
     <h1><span class="pink">Laya</span> / <span class="cyan">TypeSafe Jev</span> · Windows Spider Agent</h1>
     <div class="muted">Echte Windows-Maus aktiv · Alt+L startet/stoppt den Agenten sofort · Live-Screenshot</div>
   </div>
-  <div class="small muted">Build 5.0</div>
+  <div class="small muted">Build 5.1</div>
 </header>
 
 <main>
@@ -504,7 +504,7 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
         </div>
       </div>
       <div id="stockStatus" class="small muted" style="margin-top:8px">Stock wird automatisch gesucht…</div>
-      <div class="small muted" style="margin-top:5px">Kartenerkennung läuft standardmäßig über FastOCR. SpiderBot verwendet jetzt deine echte Windows-Maus: Quellkarte anfahren → LEFTDOWN → während der gesamten Bewegung gedrückt halten → am Ziel LEFTUP. Mit Alt+L kannst du den Agenten global starten oder stoppen; bei Stop wird eine laufende Ziehbewegung abgebrochen und die linke Taste freigegeben.</div>
+      <div class="small muted" style="margin-top:5px">Kartenerkennung läuft standardmäßig über UIA/FastOCR. SpiderBot verwendet deine echte Windows-Maus: Quellkarte anfahren → LEFTDOWN → gedrückt halten → am Ziel LEFTUP. Stock/Nachziehen ist jetzt hart gesperrt, solange mindestens ein legaler Tableau-Zug existiert. Alt+L startet/stoppt den Agenten global.</div>
     </section>
 
     <section class="card panel">
