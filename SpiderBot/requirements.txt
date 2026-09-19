@@ -1,0 +1,12 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+laya
+typesafe-sdk>=0.6.0
+numpy>=1.26
+mss>=9.0
+opencv-python>=4.10
+Pillow>=10.0
+rapidocr>=3.9.2
+onnxruntime>=1.29,<1.30
+pywin32>=306; platform_system == "Windows"
+pywinauto>=0.6.8; platform_system == "Windows"
