@@ -42,6 +42,6 @@ if errorlevel 1 (
 )
 
 echo [4/5] Starte SpiderBot auf http://127.0.0.1:8010
-echo [5/5] Im Browser muss oben Build 4.3 stehen.
+echo [5/5] Im Browser muss oben Build 4.4 stehen.
 start "" http://127.0.0.1:8010
 ".venv\Scripts\python.exe" -m uvicorn spider_app:app --host 127.0.0.1 --port 8010
