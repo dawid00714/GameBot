@@ -18,7 +18,7 @@ from spider_state import ocr_status, warm_ocr
 from spider_windows import WindowAutomationError, list_windows
 from vm_guest_input import clear_input_abort, request_input_abort
 
-app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="5.4.0")
+app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="5.5.0")
 agent = SpiderAgent()
 agent_lock = threading.RLock()
 step_lock = threading.Lock()
@@ -227,7 +227,7 @@ def index():
 def health():
     return {
         "ok": True,
-        "version": "5.4.0",
+        "version": "5.5.0",
         "windows_agent": True,
         "ocr_fallback": ocr_status(),
     }
@@ -434,7 +434,7 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
     <h1><span class="pink">Laya</span> / <span class="cyan">TypeSafe Jev</span> · Windows Spider Agent</h1>
     <div class="muted">Echte Windows-Maus aktiv · Alt+L startet/stoppt den Agenten sofort · Live-Screenshot</div>
   </div>
-  <div class="small muted">Build 5.4</div>
+  <div class="small muted">Build 5.5</div>
 </header>
 
 <main>
