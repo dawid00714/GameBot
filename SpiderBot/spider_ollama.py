@@ -29,6 +29,44 @@ _KNOWN_VISION_HINTS = (
     "lfm2.5-vl",
 )
 
+_RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+
+_SPIDER_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "q": {"type": "number", "minimum": 0, "maximum": 1},
+        "s": {"type": "boolean"},
+        "c": {
+            "type": "array",
+            "minItems": 10,
+            "maxItems": 10,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "i": {"type": "integer", "minimum": 1, "maximum": 10},
+                    "h": {"type": "boolean"},
+                    "v": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "r": {"type": "string", "enum": _RANKS},
+                                "y": {"type": "number", "minimum": 0.05, "maximum": 0.92},
+                            },
+                            "required": ["r", "y"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "required": ["i", "h", "v"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["q", "s", "c"],
+    "additionalProperties": False,
+}
+
 
 class OllamaVisionError(RuntimeError):
     pass
@@ -128,21 +166,70 @@ def _frame_to_base64(frame: np.ndarray) -> str:
 
 
 def _extract_json(text: str) -> dict[str, Any]:
-    text = text.strip()
+    text = (text or "").strip()
+    if not text:
+        raise OllamaVisionError("Das Vision-Modell hat eine leere Antwort geliefert.")
+
+    text = re.sub(r"^\s*```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*```\s*$", "", text)
+
     try:
-        return json.loads(text)
+        obj = json.loads(text)
+        if isinstance(obj, dict):
+            return obj
     except Exception:
         pass
 
     match = re.search(r"\{.*\}", text, flags=re.DOTALL)
-    if not match:
-        raise OllamaVisionError("Das Vision-Modell hat kein JSON zurückgegeben.")
-    try:
-        return json.loads(match.group(0))
-    except Exception as exc:
-        raise OllamaVisionError(
-            "Das Vision-Modell hat ungültiges JSON zurückgegeben."
-        ) from exc
+    if match:
+        try:
+            obj = json.loads(match.group(0))
+            if isinstance(obj, dict):
+                return obj
+        except Exception as exc:
+            preview = text[:240].replace("\n", " ")
+            raise OllamaVisionError(
+                f"Vision-JSON war ungültig. Antwortanfang: {preview!r}"
+            ) from exc
+
+    preview = text[:240].replace("\n", " ")
+    raise OllamaVisionError(
+        f"Das Vision-Modell hat kein JSON geliefert. Antwortanfang: {preview!r}"
+    )
+
+
+def _normalize_result(raw: dict[str, Any]) -> dict[str, Any]:
+    if "c" not in raw:
+        return {
+            "confidence": raw.get("confidence", 0.8),
+            "stock_visible": bool(raw.get("stock_visible", False)),
+            "columns": raw.get("columns") or [],
+            "notes": raw.get("notes", ""),
+        }
+
+    columns: list[dict[str, Any]] = []
+    for col in raw.get("c") or []:
+        if not isinstance(col, dict):
+            continue
+        cards: list[dict[str, Any]] = []
+        for card in col.get("v") or []:
+            if not isinstance(card, dict):
+                continue
+            cards.append({
+                "rank": str(card.get("r") or "").upper(),
+                "y": card.get("y"),
+            })
+        columns.append({
+            "column": col.get("i"),
+            "hidden": bool(col.get("h", False)),
+            "cards": cards,
+        })
+
+    return {
+        "confidence": raw.get("q", 0.8),
+        "stock_visible": bool(raw.get("s", False)),
+        "columns": columns,
+    }
 
 
 def analyze_spider(frame: np.ndarray, model: str) -> dict[str, Any]:
@@ -151,47 +238,66 @@ def analyze_spider(frame: np.ndarray, model: str) -> dict[str, Any]:
         raise OllamaVisionError("Kein Ollama-Vision-Modell ausgewählt.")
 
     image = _frame_to_base64(frame)
-    prompt = """
-Microsoft Spider Solitaire, 10 tableau columns, one-suit mode.
-Read only the tableau and purple stock. Return JSON only:
-{"confidence":0.9,"stock_visible":true,"columns":[
-{"column":1,"hidden":true,"cards":[{"rank":"A","y":0.31}]}
-]}
-Requirements:
-- exactly columns 1..10 left-to-right;
-- visible face-up cards only, top-to-bottom;
-- rank only A,2,3,4,5,6,7,8,9,10,J,Q,K;
-- y = card-center / image-height, 0..1;
-- hidden=true if purple face-down cards remain above visible cards;
-- no explanations, no menu/score/time/button text.
-""".strip()
+    prompt = (
+        "Read this Microsoft Spider Solitaire screenshot. "
+        "There are exactly 10 tableau columns left-to-right and one suit. "
+        "For each column report whether purple face-down cards remain and every "
+        "visible face-up rank from top to bottom. Also report whether the purple "
+        "stock pile is visible. Ignore menus, score, clock and buttons."
+    )
 
     payload = {
         "model": model,
+        "prompt": prompt,
+        "images": [image],
         "stream": False,
-        "format": "json",
-        "messages": [
-            {
-                "role": "user",
-                "content": prompt,
-                "images": [image],
-            }
-        ],
+        "format": _SPIDER_SCHEMA,
         "think": False,
         "options": {
             "temperature": 0,
-            "num_predict": 180,
+            "num_predict": 384,
             "num_ctx": 2048,
         },
         "keep_alive": "60m",
     }
 
-    data = _request("/api/chat", payload, timeout=90.0)
-    message = data.get("message") or {}
-    content = str(message.get("content") or "")
-    parsed = _extract_json(content)
-    parsed["_model"] = model
-    return parsed
+    data = _request("/api/generate", payload, timeout=75.0)
+
+    candidates = [
+        str(data.get("response") or ""),
+        str(data.get("thinking") or ""),
+    ]
+    parsed: dict[str, Any] | None = None
+    errors: list[str] = []
+
+    for candidate in candidates:
+        if not candidate.strip():
+            continue
+        try:
+            parsed = _extract_json(candidate)
+            break
+        except Exception as exc:
+            errors.append(str(exc))
+
+    if parsed is None:
+        detail = "; ".join(errors) if errors else "Antwort war leer"
+        raise OllamaVisionError(
+            f"Kein verwertbares strukturiertes Ergebnis von {model}. "
+            f"done_reason={data.get('done_reason')!r}, "
+            f"eval_count={data.get('eval_count')!r}. {detail}"
+        )
+
+    result = _normalize_result(parsed)
+    result["_model"] = model
+    result["_timing"] = {
+        "total_ms": round(float(data.get("total_duration") or 0) / 1_000_000, 1),
+        "load_ms": round(float(data.get("load_duration") or 0) / 1_000_000, 1),
+        "prompt_eval_ms": round(float(data.get("prompt_eval_duration") or 0) / 1_000_000, 1),
+        "eval_ms": round(float(data.get("eval_duration") or 0) / 1_000_000, 1),
+        "eval_count": data.get("eval_count"),
+        "done_reason": data.get("done_reason"),
+    }
+    return result
 
 
 def _valid_model_columns(hint: dict[str, Any]) -> dict[int, dict[str, Any]]:
@@ -271,7 +377,7 @@ def apply_hint(state: SpiderState, hint: dict[str, Any]) -> dict[str, Any]:
 
         # For OCR/partial/missing columns, a reasonably confident local VLM may
         # replace the visible-card sequence while preserving the stable X center.
-        if confidence >= 0.40 and model_cards:
+        if model_cards:
             rebuilt: list[VisibleCard] = []
             for card in model_cards:
                 rebuilt.append(
@@ -296,9 +402,11 @@ def apply_hint(state: SpiderState, hint: dict[str, Any]) -> dict[str, Any]:
     if applied_columns:
         state.reader = state.reader + "+ollama"
 
+    timing = hint.get("_timing") or {}
     state.diagnostics.append(
         f"Ollama Vision {model}: confidence={confidence:.2f}, "
-        f"angewendet={applied_columns or 'nur Prüfung'}"
+        f"angewendet={applied_columns or 'nur Prüfung'}, "
+        f"total={timing.get('total_ms', '?')}ms"
     )
     if disagreements:
         state.diagnostics.append(
@@ -312,5 +420,6 @@ def apply_hint(state: SpiderState, hint: dict[str, Any]) -> dict[str, Any]:
         "applied_columns": applied_columns,
         "disagreements": disagreements,
         "notes": str(hint.get("notes") or ""),
+        "timing": hint.get("_timing") or {},
         "raw": hint,
     }
