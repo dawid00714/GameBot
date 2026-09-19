@@ -293,12 +293,47 @@ class WindowController:
         msg: int,
         wparam: int,
         screen_point: tuple[int, int],
-    ) -> None:
-        lp = self._lparam_for_target(target, screen_point)
-        if not win32gui.PostMessage(target, msg, wparam, lp):
-            raise WindowAutomationError(
-                f"WM_MOUSE-Nachricht {msg} konnte nicht an HWND {target} gesendet werden."
+    ) -> int:
+        """Post one mouse message without ever touching the system cursor.
+
+        pywin32's PostMessage wrapper can return None on success and on some
+        WinUI/UWP windows can surface the confusing
+        "(0, 'PostMessage', 'No error message is available')" exception.
+        Use the native BOOL-returning PostMessageW API instead and, when a
+        selected child HWND rejects the message, retry against the root game
+        HWND with coordinates converted for that HWND.
+        """
+        user32 = ctypes.windll.user32
+
+        def post(hwnd: int) -> bool:
+            lp = self._lparam_for_target(hwnd, screen_point)
+            ctypes.set_last_error(0)
+            ok = user32.PostMessageW(
+                ctypes.c_void_p(int(hwnd)),
+                ctypes.c_uint(int(msg)),
+                ctypes.c_size_t(int(wparam)),
+                ctypes.c_ssize_t(int(lp)),
             )
+            return bool(ok)
+
+        if post(target):
+            return target
+
+        if target != self.hwnd and post(self.hwnd):
+            self.last_input_target = {
+                "hwnd": int(self.hwnd),
+                "class": win32gui.GetClassName(self.hwnd),
+                "title": win32gui.GetWindowText(self.hwnd),
+                "fallback_from_child": int(target),
+            }
+            return self.hwnd
+
+        err = ctypes.get_last_error()
+        raise WindowAutomationError(
+            f"Background-PostMessageW wurde vom Spiel abgelehnt "
+            f"(msg={msg}, hwnd={target}, winerr={err}). "
+            "Die echte Maus wurde nicht bewegt."
+        )
 
     def virtual_click(self, x: float, y: float, hold_ms: int = 70) -> None:
         point_client = (float(x), float(y))
