@@ -7,8 +7,17 @@ echo   SpiderBot - Laya / TypeSafe Windows Agent
 echo ===============================================
 echo.
 
+echo [0/5] Pruefe auf SpiderBot-Updates...
+where git >nul 2>nul
+if not errorlevel 1 (
+  if exist "..\.git" (
+    git -C ".." pull --ff-only
+    if errorlevel 1 echo Hinweis: Auto-Update nicht moeglich. Lokale Version wird gestartet.
+  )
+)
+
 if not exist ".venv\Scripts\python.exe" (
-  echo [1/4] Erstelle EIGENE virtuelle Umgebung in SpiderBot\.venv ...
+  echo [1/5] Erstelle EIGENE virtuelle Umgebung in SpiderBot\.venv ...
   py -m venv .venv
   if errorlevel 1 python -m venv .venv
   if errorlevel 1 (
@@ -18,10 +27,10 @@ if not exist ".venv\Scripts\python.exe" (
   )
 )
 
-echo [2/4] Aktualisiere pip...
+echo [2/5] Aktualisiere pip...
 ".venv\Scripts\python.exe" -m pip install --upgrade pip
 
-echo [3/4] Installiere NUR SpiderBot-Abhaengigkeiten...
+echo [3/5] Installiere NUR SpiderBot-Abhaengigkeiten...
 ".venv\Scripts\python.exe" -m pip install -r requirements.txt
 if errorlevel 1 (
   echo.
@@ -32,6 +41,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo [4/4] Starte SpiderBot auf http://127.0.0.1:8010
+echo [4/5] Starte SpiderBot auf http://127.0.0.1:8010
+echo [5/5] Im Browser muss oben Build 3.2 stehen.
 start "" http://127.0.0.1:8010
 ".venv\Scripts\python.exe" -m uvicorn spider_app:app --host 127.0.0.1 --port 8010
