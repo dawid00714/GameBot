@@ -425,7 +425,7 @@ class SpiderLearning:
             "loss": None if loss is None else round(float(loss), 6),
             "replay": len(brain.replay),
             "updates": brain.updates,
-            "network": "66→128→128→64→1",
+            "network": "67→128→128→64→1",
         }
 
     def record_move(self, agent: str) -> None:
@@ -455,7 +455,7 @@ class SpiderLearning:
                 brain = self.brains.get(name)
                 result[name] = {
                     "deep_rl": bool(brain and brain.enabled),
-                    "network": "66→128→128→64→1" if brain and brain.enabled else "unavailable",
+                    "network": "67→128→128→64→1" if brain and brain.enabled else "unavailable",
                     "algorithm": "online DQN / TD reward learning",
                     "games": ad["games"],
                     "wins": ad["wins"],
