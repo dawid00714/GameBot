@@ -335,6 +335,188 @@ class WindowController:
             "Die echte Maus wurde nicht bewegt."
         )
 
+    def _send_mouse_sync(
+        self,
+        target: int,
+        msg: int,
+        wparam: int,
+        screen_point: tuple[int, int],
+        timeout_ms: int = 350,
+    ) -> int:
+        """Send a mouse message synchronously to the game HWND.
+
+        Unlike PostMessageW this waits for the target window to process each
+        stage of the gesture. No system cursor API, SendInput, mouse_event or
+        foreground activation is used.
+        """
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        SMTO_BLOCK = 0x0001
+        SMTO_ABORTIFHUNG = 0x0002
+
+        def send(hwnd: int) -> bool:
+            lp = self._lparam_for_target(hwnd, screen_point)
+            result = ctypes.c_size_t()
+            ctypes.set_last_error(0)
+            ok = user32.SendMessageTimeoutW(
+                ctypes.c_void_p(int(hwnd)),
+                ctypes.c_uint(int(msg)),
+                ctypes.c_size_t(int(wparam)),
+                ctypes.c_ssize_t(int(lp)),
+                ctypes.c_uint(SMTO_BLOCK | SMTO_ABORTIFHUNG),
+                ctypes.c_uint(int(timeout_ms)),
+                ctypes.byref(result),
+            )
+            return bool(ok)
+
+        if send(target):
+            return target
+
+        if target != self.hwnd and send(self.hwnd):
+            self.last_input_target = {
+                "mode": "sync_mouse_drag",
+                "hwnd": int(self.hwnd),
+                "fallback_from_child": int(target),
+            }
+            return self.hwnd
+
+        err = ctypes.get_last_error()
+        raise WindowAutomationError(
+            f"SendMessageTimeoutW wurde vom Spiel abgelehnt "
+            f"(msg={msg}, hwnd={target}, winerr={err}). "
+            "Die echte Maus wurde nicht bewegt."
+        )
+
+    def held_mouse_click(self, x: float, y: float, hold_ms: int = 90) -> dict[str, Any]:
+        """Background left click: BUTTONDOWN -> hold -> BUTTONUP."""
+        point = (float(x), float(y))
+        target = self._background_target(point)
+        screen = win32gui.ClientToScreen(
+            self.hwnd,
+            (int(round(x)), int(round(y))),
+        )
+
+        used = self._send_mouse_sync(
+            target,
+            win32con.WM_LBUTTONDOWN,
+            win32con.MK_LBUTTON,
+            screen,
+        )
+        time.sleep(max(0.03, hold_ms / 1000.0))
+        self._send_mouse_sync(
+            used,
+            win32con.WM_LBUTTONUP,
+            0,
+            screen,
+        )
+        self.last_input_target = {
+            "mode": "held_mouse_click",
+            "hwnd": int(used),
+        }
+        return {
+            "ok": True,
+            "mode": "held_mouse_click",
+            "target": int(used),
+            "physical_mouse_touched": False,
+            "foreground_changed": False,
+        }
+
+    def held_mouse_drag(
+        self,
+        start: tuple[float, float],
+        end: tuple[float, float],
+        duration_ms: int = 850,
+        steps: int = 48,
+    ) -> dict[str, Any]:
+        """Exact drag required by Spider: DOWN, hold through every MOVE, UP.
+
+        The left-button bit MK_LBUTTON is present on every WM_MOUSEMOVE while
+        the card is being dragged. The physical Windows cursor is never moved.
+        """
+        target = self._background_target(start, end)
+        sx, sy = start
+        ex, ey = end
+        steps = max(12, int(steps))
+        total_s = max(0.20, duration_ms / 1000.0)
+        delay = total_s / steps
+
+        start_screen = win32gui.ClientToScreen(
+            self.hwnd,
+            (int(round(sx)), int(round(sy))),
+        )
+
+        # IMPORTANT: press first. Do not click/release the source card.
+        used = self._send_mouse_sync(
+            target,
+            win32con.WM_LBUTTONDOWN,
+            win32con.MK_LBUTTON,
+            start_screen,
+        )
+        time.sleep(max(0.05, delay * 2.0))
+
+        try:
+            for i in range(1, steps + 1):
+                t = i / steps
+                # Smoothstep keeps the pointer held on the source briefly,
+                # then accelerates and slows before the drop.
+                u = t * t * (3.0 - 2.0 * t)
+                x = int(round(sx + (ex - sx) * u))
+                y = int(round(sy + (ey - sy) * u))
+                screen = win32gui.ClientToScreen(self.hwnd, (x, y))
+                self._send_mouse_sync(
+                    used,
+                    win32con.WM_MOUSEMOVE,
+                    win32con.MK_LBUTTON,
+                    screen,
+                )
+                time.sleep(delay)
+
+            end_screen = win32gui.ClientToScreen(
+                self.hwnd,
+                (int(round(ex)), int(round(ey))),
+            )
+            # Release ONLY after the destination has been reached.
+            self._send_mouse_sync(
+                used,
+                win32con.WM_LBUTTONUP,
+                0,
+                end_screen,
+            )
+        except Exception:
+            # Never leave the target in a logical pressed state.
+            try:
+                end_screen = win32gui.ClientToScreen(
+                    self.hwnd,
+                    (int(round(ex)), int(round(ey))),
+                )
+                self._send_mouse_sync(
+                    used,
+                    win32con.WM_LBUTTONUP,
+                    0,
+                    end_screen,
+                    timeout_ms=180,
+                )
+            except Exception:
+                pass
+            raise
+
+        self.last_input_target = {
+            "mode": "held_mouse_drag",
+            "hwnd": int(used),
+            "steps": steps,
+            "duration_ms": int(duration_ms),
+            "sequence": "LBUTTONDOWN -> WM_MOUSEMOVE(MK_LBUTTON)*N -> LBUTTONUP",
+        }
+        return {
+            "ok": True,
+            "mode": "held_mouse_drag",
+            "target": int(used),
+            "steps": steps,
+            "duration_ms": int(duration_ms),
+            "sequence": "LBUTTONDOWN -> WM_MOUSEMOVE(MK_LBUTTON)*N -> LBUTTONUP",
+            "physical_mouse_touched": False,
+            "foreground_changed": False,
+        }
+
     def _uia_candidates_at(
         self,
         client_point: tuple[float, float],
@@ -703,62 +885,17 @@ class WindowController:
         # that no board change occurred and can try other mouse-free paths.
         return self.virtual_key(ord("D"))
 
-    def virtual_click(self, x: float, y: float, hold_ms: int = 70) -> None:
-        point_client = (float(x), float(y))
-        target = self._background_target(point_client)
-        screen = win32gui.ClientToScreen(self.hwnd, (int(round(x)), int(round(y))))
-
-        self._post_mouse(target, win32con.WM_MOUSEMOVE, 0, screen)
-        self._post_mouse(target, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, screen)
-        time.sleep(max(0.02, hold_ms / 1000.0))
-        self._post_mouse(target, win32con.WM_LBUTTONUP, 0, screen)
+    def virtual_click(self, x: float, y: float, hold_ms: int = 90) -> None:
+        self.held_mouse_click(x, y, hold_ms=hold_ms)
 
     def virtual_drag(
         self,
         start: tuple[float, float],
         end: tuple[float, float],
-        duration_ms: int = 520,
-        steps: int = 34,
+        duration_ms: int = 850,
+        steps: int = 48,
     ) -> None:
-        """Background-only drag: down -> held moves -> up, no physical cursor."""
-        target = self._background_target(start, end)
-        sx, sy = start
-        ex, ey = end
-        steps = max(8, int(steps))
-        delay = max(0.003, duration_ms / 1000.0 / steps)
-
-        start_screen = win32gui.ClientToScreen(
-            self.hwnd,
-            (int(round(sx)), int(round(sy))),
-        )
-        self._post_mouse(target, win32con.WM_MOUSEMOVE, 0, start_screen)
-        self._post_mouse(
-            target,
-            win32con.WM_LBUTTONDOWN,
-            win32con.MK_LBUTTON,
-            start_screen,
-        )
-        time.sleep(delay)
-
-        for i in range(1, steps + 1):
-            t = i / steps
-            u = t * t * (3.0 - 2.0 * t)
-            x = int(round(sx + (ex - sx) * u))
-            y = int(round(sy + (ey - sy) * u))
-            screen = win32gui.ClientToScreen(self.hwnd, (x, y))
-            self._post_mouse(
-                target,
-                win32con.WM_MOUSEMOVE,
-                win32con.MK_LBUTTON,
-                screen,
-            )
-            time.sleep(delay)
-
-        end_screen = win32gui.ClientToScreen(
-            self.hwnd,
-            (int(round(ex)), int(round(ey))),
-        )
-        self._post_mouse(target, win32con.WM_LBUTTONUP, 0, end_screen)
+        self.held_mouse_drag(start, end, duration_ms=duration_ms, steps=steps)
 
     def normalized_to_client(self, nx: float, ny: float) -> tuple[int, int]:
         info = self.info
@@ -772,7 +909,7 @@ class WindowController:
 
     def input_status(self) -> dict[str, Any]:
         return {
-            "mode": "uia_then_background_messages",
+            "mode": "held_mouse_drag_only",
             "physical_mouse_touched": False,
             "foreground_changed": False,
             "target": self.last_input_target,
