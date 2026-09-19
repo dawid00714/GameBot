@@ -577,6 +577,13 @@ class SpiderAgent:
 
     def status(self) -> dict[str, Any]:
         info = self.controller.info.to_dict() if self.controller is not None else None
+        input_status = self.controller.input_status() if self.controller is not None else {
+            "mode": "not_connected",
+            "physical_mouse_touched": False,
+            "physical_mouse_scope": "none",
+            "foreground_changed": False,
+            "target": None,
+        }
         return {
             "config": {
                 "hwnd": self.config.hwnd,
@@ -586,10 +593,11 @@ class SpiderAgent:
                 "stock_y": round(self.config.stock_y, 4),
                 "learning": self.config.learning,
                 "action_delay": self.config.action_delay,
-                "input_mode": "held_mouse_drag_only",
-                "physical_mouse_touched": False,
+                "input_mode": input_status.get("mode"),
+                "physical_mouse_touched": input_status.get("physical_mouse_touched", False),
+                "physical_mouse_scope": input_status.get("physical_mouse_scope", "none"),
                 "physical_keyboard_touched": False,
-                "foreground_window_changed": False,
+                "foreground_window_changed": input_status.get("foreground_changed", False),
                 "vision_enabled": self.config.vision_enabled,
                 "vision_model": self.config.vision_model,
                 "stock_deals_used": self.stock_deals_used,
@@ -610,10 +618,5 @@ class SpiderAgent:
             "laya": spider_models.laya_status(),
             "typesafe": spider_models.typesafe_status(),
             "learning": self.learning.summary(),
-            "input_status": self.controller.input_status() if self.controller is not None else {
-                "mode": "background_only",
-                "physical_mouse_touched": False,
-                "foreground_changed": False,
-                "target": None,
-            },
+            "input_status": input_status,
         }
