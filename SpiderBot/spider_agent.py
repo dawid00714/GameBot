@@ -487,15 +487,6 @@ class SpiderAgent:
         except spider_models.SpiderModelError as exc:
             raise SpiderAgentError(str(exc)) from exc
 
-        input_mode = self.controller.input_status().get("mode") if self.controller else None
-        if input_mode == "host_background_drag":
-            raise SpiderAgentError(
-                "Microsoft Solitaire läuft noch im HOST-Modus. Dort akzeptiert das Spiel "
-                "die isolierten Hintergrund-Mausnachrichten nicht zuverlässig. Für den "
-                "echten Drag ohne Übernahme deiner Host-Maus muss SpiderBot im VM-Gast "
-                "mit start_vm_guest.bat laufen."
-            )
-
         self._set_phase("input", f"Maus-Drag {selected.notation()}")
         changed_pixels, diff, after, input_used, input_debug = self._execute(
             state,
