@@ -116,6 +116,14 @@ def generate_actions(state: SpiderState) -> list[SpiderAction]:
                 score += 10.0 if same_suit_join else 0.0
                 score += min(8.0, len(moving_cards) * 1.5)
                 score += 7.0 if source_empty else 0.0
+                # Empty columns are valuable resources. Do not waste one just
+                # to park a card/sequence unless the move exposes a hidden card.
+                if not dst.cards:
+                    score -= 34.0
+                    if reveal:
+                        score += 24.0
+                    if len(moving_cards) == 1:
+                        score -= 10.0
                 score -= 5.0 if not dst.cards and first.rank == "K" and not reveal else 0.0
 
                 # Estimate whether the destination forms a full K..A run.
@@ -146,6 +154,23 @@ def generate_actions(state: SpiderState) -> list[SpiderAction]:
                     )
                 )
                 aid += 1
+
+    # Strategy guard: if a normal non-empty destination exists, do not let
+    # the decision model waste an empty column for a move that reveals nothing.
+    # Empty-column moves that expose a hidden card remain available.
+    nonempty_moves = [
+        a for a in actions
+        if a.kind == "move" and not a.features.get("empty_destination", 0.0)
+    ]
+    if nonempty_moves:
+        actions = [
+            a for a in actions
+            if not (
+                a.kind == "move"
+                and a.features.get("empty_destination", 0.0)
+                and not a.features.get("reveal_hidden", 0.0)
+            )
+        ]
 
     # Deal is legal only when every tableau column contains at least one card.
     if state.stock_available and all(col.cards or col.hidden_above for col in state.columns):
@@ -227,6 +252,12 @@ def _sim_actions(s: _SimState) -> list[tuple[int, int, int, float, str]]:
                 same = bool(dst.cards and dst.cards[-1][1] == first_suit)
                 score = (42.0 if reveal else 0.0) + (10.0 if same else 0.0)
                 score += min(8.0, (len(cards) - start) * 1.5)
+                if not dst.cards:
+                    score -= 34.0
+                    if reveal:
+                        score += 24.0
+                    if (len(cards) - start) == 1:
+                        score -= 10.0
                 notation = f"C{si+1}->{di+1}"
                 out.append((si, di, start, score, notation))
     return out
