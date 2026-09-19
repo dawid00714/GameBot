@@ -108,3 +108,12 @@ Der API-Key wird beim Einfügen normalisiert (z. B. ein versehentlich mitkopiert
 ## Laya wird nur bei Bedarf geladen
 
 Ab Build 3.6 wird Laya **nicht mehr beim Start von SpiderBot automatisch geladen**. Das lokale Laya-Modell wird erst geladen, wenn in der Oberfläche tatsächlich `Laya lokal` gewählt wird. Wer TypeSafe/Jev verwendet, wartet daher nicht mehr auf den 322M-Laya-Checkpoint.
+
+
+## UIA-first Eingabe
+
+Ab Build 3.9 versucht SpiderBot Kartenaktionen zuerst über Windows UI Automation:
+`SelectionItem.Select`, `InvokePattern.Invoke` und `LegacyIAccessible.DoDefaultAction`.
+Diese Methoden bewegen die echte Maus nicht und holen das Spiel nicht in den Vordergrund.
+
+Erst wenn UIA keine nutzbare Aktion liefert, wird der ältere Hintergrund-`WM_MOUSE`-Pfad versucht. Nach jeder Aktion wird der erkannte Karten-Zustand erneut gelesen; ein bloßer Auswahlrahmen zählt nicht als erfolgreicher Zug.
