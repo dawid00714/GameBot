@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -10,10 +11,12 @@ try:
     import win32api
     import win32con
     import win32gui
+    import win32ui
 except Exception:  # imported on non-Windows during static inspection
     win32api = None
     win32con = None
     win32gui = None
+    win32ui = None
 
 
 class WindowAutomationError(RuntimeError):
@@ -118,11 +121,76 @@ class WindowController:
     def is_minimized(self) -> bool:
         return bool(win32gui.IsIconic(self.hwnd))
 
+    def _capture_printwindow(self) -> np.ndarray | None:
+        """Try to render the selected HWND independently of screen occlusion."""
+        if win32ui is None:
+            return None
+
+        try:
+            wl, wt, wr, wb = win32gui.GetWindowRect(self.hwnd)
+            full_w = max(1, wr - wl)
+            full_h = max(1, wb - wt)
+            info = self.info
+            client_left, client_top = win32gui.ClientToScreen(self.hwnd, (0, 0))
+            ox = max(0, client_left - wl)
+            oy = max(0, client_top - wt)
+
+            hwnd_dc = win32gui.GetWindowDC(self.hwnd)
+            src_dc = win32ui.CreateDCFromHandle(hwnd_dc)
+            mem_dc = src_dc.CreateCompatibleDC()
+            bitmap = win32ui.CreateBitmap()
+            bitmap.CreateCompatibleBitmap(src_dc, full_w, full_h)
+            mem_dc.SelectObject(bitmap)
+
+            # PW_RENDERFULLCONTENT = 2. It works for many DWM/WinUI windows and
+            # lets the browser control panel overlap the game without poisoning
+            # the agent's screenshot.
+            rendered = ctypes.windll.user32.PrintWindow(
+                self.hwnd,
+                mem_dc.GetSafeHdc(),
+                2,
+            )
+
+            bits = bitmap.GetBitmapBits(True)
+            frame = np.frombuffer(bits, dtype=np.uint8)
+            frame.shape = (full_h, full_w, 4)
+            frame = frame[:, :, :3].copy()
+
+            mem_dc.DeleteDC()
+            src_dc.DeleteDC()
+            win32gui.ReleaseDC(self.hwnd, hwnd_dc)
+            win32gui.DeleteObject(bitmap.GetHandle())
+
+            crop = frame[
+                oy:min(full_h, oy + info.height),
+                ox:min(full_w, ox + info.width),
+            ]
+            if (
+                rendered
+                and crop.shape[0] >= max(50, info.height - 4)
+                and crop.shape[1] >= max(50, info.width - 4)
+                and float(crop.std()) > 4.0
+            ):
+                return crop
+        except Exception:
+            return None
+        return None
+
     def capture(self) -> np.ndarray:
+        # First try PrintWindow so the agent has its own visual workspace even
+        # when another window overlaps the Solitaire window.
+        frame = self._capture_printwindow()
+        if frame is not None:
+            return frame
+
+        # DirectX apps sometimes refuse PrintWindow. Fall back to real screen
+        # capture; this requires the game to be visible and not covered.
         if self.is_minimized():
             raise WindowAutomationError(
-                "Das ausgewählte Spiel ist minimiert. Für die Bilderkennung muss es sichtbar sein."
+                "Das Spiel ist minimiert und unterstützt PrintWindow nicht. "
+                "Bitte wiederherstellen."
             )
+
         info = self.info
         try:
             import mss
@@ -140,7 +208,6 @@ class WindowController:
                     }
                 )
             )
-        # mss = BGRA; keep BGR for OpenCV.
         return frame[:, :, :3].copy()
 
     @staticmethod
