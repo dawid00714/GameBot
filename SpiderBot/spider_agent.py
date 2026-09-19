@@ -214,6 +214,81 @@ class SpiderAgent:
         self._set_phase("observed", "Spielzustand gelesen")
         return state, frame
 
+    def _verify_frame_state(self, frame) -> SpiderState:
+        """Read an already captured post-action frame.
+
+        When Ollama Vision is enabled it remains the primary reader here too, so
+        post-move verification no longer falls back to the slow RapidOCR path
+        on every single action.
+        """
+        ctl = self._require_controller()
+        info = ctl.info
+        vision_primary = bool(
+            self.config.vision_enabled and self.config.vision_model
+        )
+
+        state = read_state(
+            ctl.hwnd,
+            frame,
+            info.left,
+            info.top,
+            stock_point=(self.config.stock_x, self.config.stock_y),
+            use_ocr=not vision_primary,
+        )
+
+        if state.stock_point is not None:
+            self.config.stock_x = float(state.stock_point[0])
+            self.config.stock_y = float(state.stock_point[1])
+
+        if not vision_primary:
+            return state
+
+        try:
+            self._set_phase(
+                "verify_ollama",
+                f"Ollama {self.config.vision_model} verifiziert die Karten",
+            )
+            hint = spider_ollama.analyze_spider(frame, self.config.vision_model)
+            vision_meta = spider_ollama.apply_hint(state, hint)
+            visible = sum(len(c.cards) for c in state.columns)
+            confidence = float(vision_meta.get("confidence") or 0.0)
+            if visible >= 5 and confidence >= 0.55:
+                return state
+
+            self._set_phase(
+                "verify_ocr_fallback",
+                "Ollama-Verifikation unsicher – OCR nur als Fallback",
+            )
+            fallback = read_state(
+                ctl.hwnd,
+                frame,
+                info.left,
+                info.top,
+                stock_point=(self.config.stock_x, self.config.stock_y),
+                use_ocr=True,
+            )
+            fallback.diagnostics.append(
+                f"Verify-Fallback: Ollama confidence={confidence:.2f}, visible={visible}"
+            )
+            return fallback
+        except Exception as exc:
+            self._set_phase(
+                "verify_ocr_fallback",
+                "Ollama-Verifikation fehlgeschlagen – OCR-Fallback",
+            )
+            fallback = read_state(
+                ctl.hwnd,
+                frame,
+                info.left,
+                info.top,
+                stock_point=(self.config.stock_x, self.config.stock_y),
+                use_ocr=True,
+            )
+            fallback.diagnostics.append(
+                f"Ollama Verify-Fehler: {type(exc).__name__}: {exc}"
+            )
+            return fallback
+
     def _healthy_state(self, state: SpiderState) -> bool:
         visible = sum(len(c.cards) for c in state.columns)
         hidden_cols = sum(1 for c in state.columns if c.hidden_above)
@@ -420,7 +495,7 @@ class SpiderAgent:
         self._set_phase("verify", "Spielzustand nach Aktion verifizieren")
         try:
             time.sleep(0.12)
-            next_state, _ = self.observe(use_vision=False)
+            next_state = self._verify_frame_state(after)
             next_sig = state_signature(next_state)
             board_changed = next_sig != sig
         except Exception as exc:
@@ -463,7 +538,8 @@ class SpiderAgent:
                 time.sleep(self.config.action_delay)
 
                 self._set_phase("verify_keyboard", "Tastatur-Zug verifizieren")
-                keyboard_state, keyboard_frame = self.observe(use_vision=False)
+                keyboard_frame = ctl.capture()
+                keyboard_state = self._verify_frame_state(keyboard_frame)
                 keyboard_sig = state_signature(keyboard_state)
                 keyboard_diff = frame_difference(before, keyboard_frame)
 
@@ -487,7 +563,8 @@ class SpiderAgent:
                         {"mode": "background_keyboard_reverse", "result": keyboard_result_2}
                     )
                     time.sleep(self.config.action_delay)
-                    keyboard_state_2, keyboard_frame_2 = self.observe(use_vision=False)
+                    keyboard_frame_2 = ctl.capture()
+                    keyboard_state_2 = self._verify_frame_state(keyboard_frame_2)
                     keyboard_sig_2 = state_signature(keyboard_state_2)
                     keyboard_diff_2 = frame_difference(before, keyboard_frame_2)
                     if keyboard_sig_2 != sig:
