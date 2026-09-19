@@ -107,14 +107,14 @@ def list_vision_models() -> dict[str, Any]:
 
 
 def _frame_to_base64(frame: np.ndarray) -> str:
-    # Card ranks remain readable at ~960 px width while local VLM latency drops
-    # substantially on consumer GPUs/CPUs.
+    # Spider has a fixed, high-contrast card UI. 800px width keeps rank glyphs
+    # readable while cutting multimodal prompt cost substantially.
     h, w = frame.shape[:2]
-    if w > 960:
-        scale = 960.0 / float(w)
+    if w > 800:
+        scale = 800.0 / float(w)
         frame = cv2.resize(
             frame,
-            (960, max(1, int(round(h * scale)))),
+            (800, max(1, int(round(h * scale)))),
             interpolation=cv2.INTER_AREA,
         )
     ok, encoded = cv2.imencode(
@@ -152,35 +152,18 @@ def analyze_spider(frame: np.ndarray, model: str) -> dict[str, Any]:
 
     image = _frame_to_base64(frame)
     prompt = """
-Du siehst einen Screenshot von Microsoft Spider Solitaire mit genau 10 Tableau-Spalten.
-Analysiere NUR die Karten im Spielfeld und den violetten Nachziehstapel.
-
-Gib ausschließlich JSON in diesem Schema zurück:
-{
-  "confidence": 0.0,
-  "stock_visible": true,
-  "columns": [
-    {
-      "column": 1,
-      "hidden": true,
-      "cards": [
-        {"rank": "K", "y": 0.31}
-      ]
-    }
-  ],
-  "notes": ""
-}
-
-Regeln:
-- Es müssen genau die Spalten 1 bis 10 vorhanden sein, von links nach rechts.
-- cards enthält nur offen sichtbare Karten einer Spalte, von oben nach unten.
-- rank ist exakt A,2,3,4,5,6,7,8,9,10,J,Q oder K.
-- y ist die vertikale Position des Karten-ZENTRUMS relativ zur Bildhöhe von 0 bis 1.
-- hidden=true, wenn oberhalb der offenen Karten noch violette verdeckte Karten liegen.
-- stock_visible=true, wenn unten/rechts noch der violette Nachziehstapel sichtbar ist.
-- Dieses Spiel ist im gezeigten Modus 1-Suit Spider; die Farbe ist daher für die Zuglogik nicht nötig.
-- Menüs, Punktzahl, Uhrzeit und Buttons NICHT als Karten interpretieren.
-- Erfinde keine verdeckten Kartenwerte.
+Microsoft Spider Solitaire, 10 tableau columns, one-suit mode.
+Read only the tableau and purple stock. Return JSON only:
+{"confidence":0.9,"stock_visible":true,"columns":[
+{"column":1,"hidden":true,"cards":[{"rank":"A","y":0.31}]}
+]}
+Requirements:
+- exactly columns 1..10 left-to-right;
+- visible face-up cards only, top-to-bottom;
+- rank only A,2,3,4,5,6,7,8,9,10,J,Q,K;
+- y = card-center / image-height, 0..1;
+- hidden=true if purple face-down cards remain above visible cards;
+- no explanations, no menu/score/time/button text.
 """.strip()
 
     payload = {
@@ -194,11 +177,13 @@ Regeln:
                 "images": [image],
             }
         ],
+        "think": False,
         "options": {
             "temperature": 0,
-            "num_predict": 420,
+            "num_predict": 180,
+            "num_ctx": 2048,
         },
-        "keep_alive": "30m",
+        "keep_alive": "60m",
     }
 
     data = _request("/api/chat", payload, timeout=90.0)
@@ -286,7 +271,7 @@ def apply_hint(state: SpiderState, hint: dict[str, Any]) -> dict[str, Any]:
 
         # For OCR/partial/missing columns, a reasonably confident local VLM may
         # replace the visible-card sequence while preserving the stable X center.
-        if confidence >= 0.70 and model_cards:
+        if confidence >= 0.40 and model_cards:
             rebuilt: list[VisibleCard] = []
             for card in model_cards:
                 rebuilt.append(
