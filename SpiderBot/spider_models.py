@@ -22,6 +22,9 @@ _laya_load_path: str | None = None
 
 _typesafe_key = os.getenv("TYPESAFE_API_KEY", "").strip() or None
 _typesafe_lock = threading.Lock()
+_typesafe_validated = False
+_typesafe_validation_error: str | None = None
+_typesafe_available_models: list[str] = []
 
 
 class SpiderModelError(RuntimeError):
@@ -113,17 +116,128 @@ def laya_status() -> dict[str, Any]:
         }
 
 
+def _normalize_typesafe_key(key: str | None) -> str | None:
+    value = (key or "").strip()
+    if not value:
+        return None
+
+    # Make copy/paste from documentation/chat tolerant of common wrappers.
+    if value.lower().startswith("bearer "):
+        value = value[7:].strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        value = value[1:-1].strip()
+
+    # Bearer credentials are HTTP header tokens and therefore must be ASCII.
+    # If this fails, httpx/httpcore later raises the much less useful
+    # UnicodeEncodeError seen by the user.
+    try:
+        value.encode("ascii")
+    except UnicodeEncodeError as exc:
+        bad = value[exc.start]
+        raise SpiderModelError(
+            "Der eingegebene TypeSafe API-Key enthält ein Nicht-ASCII-Zeichen "
+            f"an Position {exc.start + 1} (U+{ord(bad):04X}). "
+            "Bitte den reinen API-Key direkt aus TypeSafe kopieren – ohne "
+            "Beschriftung, Anführungszeichen oder zusätzlichen Text."
+        ) from exc
+
+    # HTTP bearer values must not contain whitespace/control characters.
+    if any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
+        raise SpiderModelError(
+            "Der eingegebene TypeSafe API-Key enthält Leer-/Steuerzeichen. "
+            "Bitte nur den reinen API-Key einfügen."
+        )
+    return value
+
+
 def set_typesafe_key(key: str | None) -> None:
-    global _typesafe_key
+    global _typesafe_key, _typesafe_validated, _typesafe_validation_error, _typesafe_available_models
+    value = _normalize_typesafe_key(key)
     with _typesafe_lock:
-        _typesafe_key = (key or "").strip() or None
+        _typesafe_key = value
+        _typesafe_validated = False
+        _typesafe_validation_error = None
+        _typesafe_available_models = []
+
+
+def validate_typesafe() -> dict[str, Any]:
+    """Verify the credential immediately instead of failing on the first move."""
+    global _typesafe_validated, _typesafe_validation_error, _typesafe_available_models
+
+    with _typesafe_lock:
+        key = _typesafe_key
+    if not key:
+        raise SpiderModelError("TypeSafe API-Key fehlt.")
+    with _typesafe_lock:
+        validated = _typesafe_validated
+    if not validated:
+        raise SpiderModelError(
+            "TypeSafe API-Key wurde noch nicht erfolgreich geprüft. "
+            "Bitte zuerst 'API verbinden' drücken."
+        )
+
+    try:
+        from typesafe_sdk import TypeSafeClient
+    except Exception as exc:
+        raise SpiderModelError(f"typesafe-sdk fehlt: {exc}") from exc
+
+    kwargs: dict[str, Any] = {"api_key": key, "timeout": 20.0}
+    if _TYPESAFE_MODEL:
+        kwargs["model"] = _TYPESAFE_MODEL
+
+    try:
+        with TypeSafeClient(**kwargs) as client:
+            response = client.models.list()
+        names: list[str] = []
+        try:
+            for item in response:
+                name = getattr(item, "name", None) or getattr(item, "model", None)
+                if name:
+                    names.append(str(name))
+        except Exception:
+            pass
+
+        with _typesafe_lock:
+            _typesafe_validated = True
+            _typesafe_validation_error = None
+            _typesafe_available_models = names
+
+    except UnicodeEncodeError as exc:
+        # This should now only be reachable if an SDK/default header contains
+        # non-ASCII. Keep the diagnostic explicit and separate from auth errors.
+        with _typesafe_lock:
+            _typesafe_validated = False
+            _typesafe_validation_error = (
+                f"UnicodeEncodeError im TypeSafe HTTP-Header: {exc}"
+            )
+        raise SpiderModelError(
+            "TypeSafe konnte den HTTP-Request nicht senden, weil ein Header "
+            f"nicht ASCII-kompatibel ist: {exc}"
+        ) from exc
+    except Exception as exc:
+        with _typesafe_lock:
+            _typesafe_validated = False
+            _typesafe_validation_error = f"{type(exc).__name__}: {exc}"
+        raise SpiderModelError(
+            f"TypeSafe-Verbindungstest fehlgeschlagen: {type(exc).__name__}: {exc}"
+        ) from exc
+
+    return typesafe_status()
 
 
 def typesafe_status() -> dict[str, Any]:
     with _typesafe_lock:
         configured = bool(_typesafe_key)
+        validated = bool(_typesafe_validated)
+        validation_error = _typesafe_validation_error
+        models = list(_typesafe_available_models)
+        key_length = len(_typesafe_key) if _typesafe_key else 0
     return {
         "configured": configured,
+        "validated": validated,
+        "validation_error": validation_error,
+        "key_length": key_length,
+        "available_models": models,
         "model": _TYPESAFE_MODEL or "server default (Jev)",
     }
 
