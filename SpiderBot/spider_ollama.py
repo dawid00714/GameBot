@@ -107,13 +107,14 @@ def list_vision_models() -> dict[str, Any]:
 
 
 def _frame_to_base64(frame: np.ndarray) -> str:
-    # A 1280-wide JPEG is enough for card ranks and keeps local VLM latency sane.
+    # Card ranks remain readable at ~960 px width while local VLM latency drops
+    # substantially on consumer GPUs/CPUs.
     h, w = frame.shape[:2]
-    if w > 1280:
-        scale = 1280.0 / float(w)
+    if w > 960:
+        scale = 960.0 / float(w)
         frame = cv2.resize(
             frame,
-            (1280, max(1, int(round(h * scale)))),
+            (960, max(1, int(round(h * scale)))),
             interpolation=cv2.INTER_AREA,
         )
     ok, encoded = cv2.imencode(
@@ -195,7 +196,9 @@ Regeln:
         ],
         "options": {
             "temperature": 0,
+            "num_predict": 420,
         },
+        "keep_alive": "30m",
     }
 
     data = _request("/api/chat", payload, timeout=90.0)
