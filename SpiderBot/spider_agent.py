@@ -99,9 +99,9 @@ class SpiderAgent:
             self.config.learning = bool(learning)
         if action_delay is not None:
             self.config.action_delay = max(0.15, min(float(action_delay), 5.0))
-        # SpiderBot is intentionally background-only. It must never move the
-        # user's real cursor or activate/raise the game window.
-        self.config.input_mode = "background"
+        # Actual input mode is controlled by the Windows controller/startup
+        # environment (real host mouse, VM guest, or background fallback).
+        self.config.input_mode = "auto"
         if vision_enabled is not None:
             self.config.vision_enabled = bool(vision_enabled)
         if vision_model is not None:
@@ -391,8 +391,12 @@ class SpiderAgent:
             )
 
         if self.config.learning:
-            for action in actions:
-                self.learning.enrich(self.config.model, sig, action)
+            self.learning.enrich_actions(
+                self.config.model,
+                sig,
+                state,
+                actions,
+            )
 
         # Search first, model second: do not present dozens of weak legal moves
         # to Laya/Jev. Restrict the chooser to the strongest plausible options.
@@ -559,13 +563,40 @@ class SpiderAgent:
             return self.status()
 
         self.moves += 1
+        won_now = bool(next_state is not None and self._is_win(next_state))
+        learning_debug = None
+
         if self.config.learning:
             self.learning.record_move(self.config.model)
+
+            repeated_state = bool(
+                next_sig == sig
+                or any(item.get("next_state_sig") == next_sig for item in self.trajectory[-20:])
+            )
+            if next_state is not None:
+                reward = self.learning.reward_for_transition(
+                    state,
+                    selected,
+                    next_state,
+                    won=won_now,
+                    repeated_state=repeated_state,
+                )
+                learning_debug = self.learning.observe_transition(
+                    self.config.model,
+                    state,
+                    selected,
+                    next_state,
+                    reward=reward,
+                    done=won_now,
+                )
+
             self.trajectory.append(
                 {
                     "state_sig": sig,
+                    "next_state_sig": next_sig,
                     "action": selected.notation(),
                     "features": selected.features,
+                    "reward": None if learning_debug is None else learning_debug.get("reward"),
                 }
             )
 
@@ -580,9 +611,10 @@ class SpiderAgent:
             "stock_deals_used": self.stock_deals_used,
             "stock_failed_clicks": self.stock_failed_clicks,
             "model_debug": model_debug,
+            "deep_learning": learning_debug,
         }
 
-        if next_state is not None and self._is_win(next_state):
+        if won_now:
             self.game_finished = True
             self.game_won = True
             self._finish_learning(True)
