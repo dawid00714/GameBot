@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import ctypes
+from ctypes import wintypes
+import os
 import threading
 import time
 from typing import Any
@@ -13,8 +16,9 @@ import spider_ollama
 from spider_agent import SpiderAgent, SpiderAgentError
 from spider_state import ocr_status, warm_ocr
 from spider_windows import WindowAutomationError, list_windows
+from vm_guest_input import clear_input_abort, request_input_abort
 
-app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="4.7.0")
+app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="4.8.0")
 agent = SpiderAgent()
 agent_lock = threading.RLock()
 step_lock = threading.Lock()
@@ -26,6 +30,10 @@ runtime = {
     "last_loop_error": None,
     "steps": 0,
     "started_at": None,
+    "hotkey": "Alt+L",
+    "hotkey_registered": False,
+    "hotkey_error": None,
+    "hotkey_last": None,
 }
 
 
@@ -97,6 +105,7 @@ def _start_runner() -> None:
     global run_thread
     if runtime["running"]:
         return
+    clear_input_abort()
     run_stop.clear()
     runtime["last_loop_error"] = None
     runtime["stopping"] = False
@@ -107,6 +116,7 @@ def _start_runner() -> None:
 
 
 def _stop_runner() -> None:
+    request_input_abort()
     run_stop.set()
     if runtime["running"]:
         runtime["stopping"] = True
@@ -121,6 +131,74 @@ def _status() -> dict[str, Any]:
     return data
 
 
+def _preflight_start() -> None:
+    if agent.controller is None:
+        raise SpiderAgentError("Zuerst Spielfenster auswählen.")
+
+    if agent.config.model == "typesafe":
+        ts = spider_models.typesafe_status()
+        if not ts.get("validated"):
+            raise SpiderAgentError(
+                ts.get("validation_error")
+                or "TypeSafe API-Key wurde noch nicht erfolgreich geprüft."
+            )
+
+    if agent.config.vision_enabled and not agent.config.vision_model:
+        raise SpiderAgentError(
+            "Ollama-Vision ist aktiviert, aber kein Vision-Modell ausgewählt."
+        )
+
+
+def _toggle_from_hotkey() -> None:
+    if runtime["running"]:
+        _stop_runner()
+        runtime["hotkey_last"] = "stop"
+        return
+
+    try:
+        _preflight_start()
+        runtime["last_loop_error"] = None
+        _start_runner()
+        runtime["hotkey_last"] = "start"
+    except Exception as exc:
+        runtime["last_loop_error"] = f"{type(exc).__name__}: {exc}"
+        runtime["hotkey_last"] = "error"
+
+
+def _hotkey_loop() -> None:
+    if os.name != "nt":
+        runtime["hotkey_error"] = "Globaler Hotkey ist nur unter Windows verfügbar."
+        return
+
+    user32 = ctypes.windll.user32
+    HOTKEY_ID = 0x4C59
+    MOD_ALT = 0x0001
+    MOD_NOREPEAT = 0x4000
+    VK_L = 0x4C
+    WM_HOTKEY = 0x0312
+
+    ok = bool(user32.RegisterHotKey(None, HOTKEY_ID, MOD_ALT | MOD_NOREPEAT, VK_L))
+    runtime["hotkey_registered"] = ok
+    if not ok:
+        runtime["hotkey_error"] = "Alt+L konnte nicht registriert werden."
+        return
+
+    msg = wintypes.MSG()
+    try:
+        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
+            if msg.message == WM_HOTKEY and int(msg.wParam) == HOTKEY_ID:
+                _toggle_from_hotkey()
+    finally:
+        user32.UnregisterHotKey(None, HOTKEY_ID)
+
+
+threading.Thread(
+    target=_hotkey_loop,
+    name="spider-alt-l-hotkey",
+    daemon=True,
+).start()
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     return HTMLResponse(HTML)
@@ -130,7 +208,7 @@ def index():
 def health():
     return {
         "ok": True,
-        "version": "4.7.0",
+        "version": "4.8.0",
         "windows_agent": True,
         "ocr_fallback": ocr_status(),
     }
@@ -255,23 +333,10 @@ def step():
 
 @app.post("/api/run/start")
 def run_start():
-    if agent.controller is None:
-        raise HTTPException(status_code=409, detail="Zuerst Spielfenster auswählen.")
-
-    if agent.config.model == "typesafe":
-        ts = spider_models.typesafe_status()
-        if not ts.get("validated"):
-            detail = ts.get("validation_error") or (
-                "TypeSafe API-Key wurde noch nicht erfolgreich geprüft. "
-                "Bitte zuerst 'API verbinden' drücken."
-            )
-            raise HTTPException(status_code=409, detail=detail)
-
-    if agent.config.vision_enabled and not agent.config.vision_model:
-        raise HTTPException(
-            status_code=409,
-            detail="Ollama-Vision ist aktiviert, aber kein Vision-Modell ausgewählt.",
-        )
+    try:
+        _preflight_start()
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=f"{type(exc).__name__}: {exc}")
 
     runtime["last_loop_error"] = None
     _start_runner()
@@ -347,9 +412,9 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
 <header>
   <div>
     <h1><span class="pink">Laya</span> / <span class="cyan">TypeSafe Jev</span> · Windows Spider Agent</h1>
-    <div class="muted">Host: keine echte Maus · VM-Gast: echter Drag nur innerhalb der VM · Live-Screenshot</div>
+    <div class="muted">Echte Windows-Maus aktiv · Alt+L startet/stoppt den Agenten sofort · Live-Screenshot</div>
   </div>
-  <div class="small muted">Build 4.7</div>
+  <div class="small muted">Build 4.8</div>
 </header>
 
 <main>
@@ -410,7 +475,7 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
     </section>
 
     <section class="card panel">
-      <h2>3 · Virtueller Maus-Drag / Stock</h2>
+      <h2>3 · Echter Maus-Drag / Stock</h2>
       <div class="grid2">
         <div><label>Wartezeit pro Aktion</label><select id="delay"><option value=".45">0,45 s</option><option value=".85" selected>0,85 s</option><option value="1.2">1,2 s</option><option value="1.8">1,8 s</option></select></div>
         <div>
@@ -419,7 +484,7 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
         </div>
       </div>
       <div id="stockStatus" class="small muted" style="margin-top:8px">Stock wird automatisch gesucht…</div>
-      <div class="small muted" style="margin-top:5px">Kartenerkennung läuft standardmäßig über FastOCR. Auf dem normalen Host werden keine echten Mausereignisse gesendet. Im VM-Gastmodus nutzt SpiderBot echten Windows-SendInput nur innerhalb der VM: Quellkarte anfahren → LEFTDOWN → während der gesamten Bewegung gedrückt halten → am Ziel LEFTUP.</div>
+      <div class="small muted" style="margin-top:5px">Kartenerkennung läuft standardmäßig über FastOCR. SpiderBot verwendet jetzt deine echte Windows-Maus: Quellkarte anfahren → LEFTDOWN → während der gesamten Bewegung gedrückt halten → am Ziel LEFTUP. Mit Alt+L kannst du den Agenten global starten oder stoppen; bei Stop wird eine laufende Ziehbewegung abgebrochen und die linke Taste freigegeben.</div>
     </section>
 
     <section class="card panel">
@@ -629,14 +694,15 @@ async function refreshStatus(){
       d.config.vision_enabled && d.config.vision_model ? 'Ollama '+d.config.vision_model : 'FastOCR'
     ));
     const im=d.input_status?.mode||'unbekannt';
-    if(im==='vm_guest_real_drag'){
-      $('inputModeBadge').textContent='VM-GAST: ECHTER DRAG · spielbereit';
+    if(im==='host_real_mouse'){
+      $('inputModeBadge').textContent='ECHTE HOST-MAUS · Alt+L Start/Stop';
       $('inputModeBadge').className='badge ok';
-    }else if(im==='host_background_drag'){
-      $('inputModeBadge').textContent='HOST-MODUS: ECHTER DRAG NICHT MÖGLICH';
-      $('inputModeBadge').className='badge bad';
+    }else if(im==='vm_guest_real_drag'){
+      $('inputModeBadge').textContent='VM-GAST: ECHTER DRAG';
+      $('inputModeBadge').className='badge ok';
     }else{
       $('inputModeBadge').textContent='Eingabemodus: '+im;
+      $('inputModeBadge').className='badge warn';
     }
 
     const ls=d.laya;
@@ -662,7 +728,7 @@ async function refreshStatus(){
       const phase=d.phase_detail||d.phase||'arbeitet';
       const elapsed=Number(d.phase_elapsed_seconds||0).toFixed(1);
       $('mainStatus').textContent=(d.runtime.stopping?'Stop angefordert · ':'Agent spielt · ')+
-        phase+' · '+elapsed+' s · Aktion '+(d.moves+1);
+        phase+' · '+elapsed+' s · Aktion '+(d.moves+1)+' · Alt+L = Stop';
     }else{
       $('mainStatus').textContent=d.window?'Fenster verbunden · '+d.moves+' Aktionen ausgeführt':'Noch kein Spielfenster ausgewählt.';
     }
