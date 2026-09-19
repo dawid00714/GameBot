@@ -278,6 +278,34 @@ def _read_uia(hwnd: int, width: int, height: int, client_left: int, client_top: 
 
 
 _ocr_engine = None
+_ocr_warm_error: str | None = None
+
+
+def warm_ocr() -> dict[str, Any]:
+    """Load RapidOCR models once in the background.
+
+    The first RapidOCR construction can take 10-15 seconds on Windows because
+    three ONNX models are loaded. Warming it while the user configures the UI
+    removes that delay from the first actual game move.
+    """
+    global _ocr_engine, _ocr_warm_error
+    if _ocr_engine is not None:
+        return {"ready": True, "error": None}
+    try:
+        from rapidocr import RapidOCR
+        _ocr_engine = RapidOCR()
+        _ocr_warm_error = None
+        return {"ready": True, "error": None}
+    except Exception as exc:
+        _ocr_warm_error = f"{type(exc).__name__}: {exc}"
+        return {"ready": False, "error": _ocr_warm_error}
+
+
+def ocr_status() -> dict[str, Any]:
+    return {
+        "ready": _ocr_engine is not None,
+        "error": _ocr_warm_error,
+    }
 
 
 def _read_ocr(frame: np.ndarray) -> tuple[list[VisibleCard], list[str]]:
