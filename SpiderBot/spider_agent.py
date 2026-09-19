@@ -216,7 +216,7 @@ class SpiderAgent:
         state: SpiderState,
         action: SpiderAction,
         before,
-    ) -> tuple[bool, float, Any, str]:
+    ) -> tuple[bool, float, Any, str, dict[str, Any]]:
         ctl = self._require_controller()
 
         start = None
@@ -230,33 +230,58 @@ class SpiderAgent:
             if state.stock_point is not None
             else (self.config.stock_x, self.config.stock_y)
         )
+        stock_client = ctl.normalized_to_client(stock_x, stock_y)
+        debug: dict[str, Any] = {"attempts": []}
 
-        # STRICTLY background-only. No SetCursorPos, SendInput, mouse_event,
-        # SetForegroundWindow, BringWindowToTop, ShowWindow or focus switching.
-        if action.kind == "deal":
-            ctl.click_normalized(stock_x, stock_y)
-        else:
-            assert start is not None and end is not None
-            ctl.virtual_drag(start, end, duration_ms=520, steps=34)
+        # 1) Preferred path: Windows UI Automation accessibility patterns.
+        # This performs Invoke/SelectionItem/Legacy actions and never touches
+        # the physical mouse or foreground window.
+        try:
+            self._set_phase("input_uia", f"UIA-Aktion {action.notation()}")
+            if action.kind == "deal":
+                uia = ctl.uia_invoke_stock(stock_client)
+            else:
+                assert start is not None and end is not None
+                uia = ctl.uia_move(start, end)
+            debug["attempts"].append({"mode": "uia", "result": uia})
 
-        time.sleep(self.config.action_delay)
-        after = ctl.capture()
-        diff = frame_difference(before, after)
+            time.sleep(self.config.action_delay)
+            after = ctl.capture()
+            diff = frame_difference(before, after)
+            if diff >= 0.0015:
+                return True, diff, after, "uia_accessibility", debug
+        except Exception as exc:
+            debug["attempts"].append({
+                "mode": "uia",
+                "error": f"{type(exc).__name__}: {exc}",
+            })
 
-        # One slower retry is allowed, still using only background WM_MOUSE
-        # messages. If Microsoft Solitaire rejects them, report failure instead
-        # of ever touching the real mouse.
-        if diff < 0.0015:
+        # 2) Secondary mouse-free path: background WM_MOUSE messages.
+        # Microsoft Solitaire may reject these; if it does, report that fact.
+        try:
+            self._set_phase("input_background", f"Background-Aktion {action.notation()}")
             if action.kind == "deal":
                 ctl.click_normalized(stock_x, stock_y)
             else:
                 assert start is not None and end is not None
-                ctl.virtual_drag(start, end, duration_ms=760, steps=48)
+                ctl.virtual_drag(start, end, duration_ms=620, steps=40)
+
             time.sleep(self.config.action_delay)
             after = ctl.capture()
             diff = frame_difference(before, after)
-
-        return diff >= 0.0015, diff, after, "background_only"
+            debug["attempts"].append({
+                "mode": "background_wm_mouse",
+                "screen_difference": round(diff, 6),
+            })
+            return diff >= 0.0015, diff, after, "background_wm_mouse", debug
+        except Exception as exc:
+            after = ctl.capture()
+            diff = frame_difference(before, after)
+            debug["attempts"].append({
+                "mode": "background_wm_mouse",
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+            return False, diff, after, "no_mouse_free_input_accepted", debug
 
     def step(self) -> dict[str, Any]:
         self.last_error = None
@@ -336,33 +361,57 @@ class SpiderAgent:
         except spider_models.SpiderModelError as exc:
             raise SpiderAgentError(str(exc)) from exc
 
-        self._set_phase("input", f"Hintergrundaktion {selected.notation()}")
-        changed, diff, after, input_used = self._execute(state, selected, before)
+        self._set_phase("input", f"Mausfreie Aktion {selected.notation()}")
+        changed_pixels, diff, after, input_used, input_debug = self._execute(
+            state,
+            selected,
+            before,
+        )
+
+        # Pixel differences alone can be caused by a selection highlight.
+        # Verify the actual recognized Spider state before counting a move.
+        self._set_phase("verify", "Spielzustand nach Aktion verifizieren")
+        try:
+            time.sleep(0.12)
+            next_state, _ = self.observe(use_vision=False)
+            next_sig = state_signature(next_state)
+            board_changed = next_sig != sig
+        except Exception as exc:
+            next_state = None
+            next_sig = sig
+            board_changed = False
+            input_debug["verify_error"] = f"{type(exc).__name__}: {exc}"
+
+        accepted = bool(changed_pixels and board_changed)
 
         if selected.kind == "deal":
-            if changed:
+            if accepted:
                 self.stock_deals_used += 1
                 self.stock_failed_clicks = 0
             else:
                 self.stock_failed_clicks += 1
 
-        if not changed:
+        if not accepted:
             self.failed_actions.setdefault(sig, set()).add(selected.notation())
-            self._set_phase("input_rejected", "Spiel hat Hintergrundaktion nicht angenommen")
+            self._set_phase(
+                "input_rejected",
+                "Weder UIA noch Hintergrund-Eingabe hat den Spielzustand geändert",
+            )
             self.last_action = {
                 "model": self.config.model,
                 "action": selected.to_dict(),
                 "accepted": False,
                 "screen_difference": round(diff, 6),
+                "board_changed": board_changed,
                 "input_used": input_used,
+                "input_debug": input_debug,
                 "stock_deals_used": self.stock_deals_used,
                 "stock_failed_clicks": self.stock_failed_clicks,
                 "model_debug": model_debug,
                 "warning": (
-                    "Das Spielbild hat sich nach der Aktion nicht geändert. "
-                    "Die Aktion wurde für diese Stellung gesperrt. "
-                    "Falls das häufig passiert, akzeptiert das Spiel möglicherweise "
-                    "keine Hintergrund-WM_MOUSE-Nachrichten."
+                    "SpiderBot hat zuerst UI Automation und danach Hintergrund-"
+                    "WM_MOUSE versucht. Die echte Maus wurde nicht bewegt. "
+                    "Der erkannte Spielzustand hat sich nicht geändert."
                 ),
             }
             return self.status()
@@ -383,25 +432,18 @@ class SpiderAgent:
             "action": selected.to_dict(),
             "accepted": True,
             "screen_difference": round(diff, 6),
+            "board_changed": True,
             "input_used": input_used,
+            "input_debug": input_debug,
             "stock_deals_used": self.stock_deals_used,
             "stock_failed_clicks": self.stock_failed_clicks,
             "model_debug": model_debug,
         }
 
-        # Re-observe after the animation has settled so the web UI shows the
-        # actual game state. Do NOT run the local VLM a second time for the same
-        # move; that previously doubled per-move latency.
-        time.sleep(0.15)
-        try:
-            self._set_phase("verify", "Zug im echten Fenster verifizieren")
-            next_state, _ = self.observe(use_vision=False)
-            if self._is_win(next_state):
-                self.game_finished = True
-                self.game_won = True
-                self._finish_learning(True)
-        except Exception:
-            pass
+        if next_state is not None and self._is_win(next_state):
+            self.game_finished = True
+            self.game_won = True
+            self._finish_learning(True)
 
         self._set_phase("idle", "Bereit für nächsten Zug")
         return self.status()
@@ -431,7 +473,7 @@ class SpiderAgent:
                 "stock_y": round(self.config.stock_y, 4),
                 "learning": self.config.learning,
                 "action_delay": self.config.action_delay,
-                "input_mode": "background_only",
+                "input_mode": "uia_then_background_messages",
                 "physical_mouse_touched": False,
                 "foreground_window_changed": False,
                 "vision_enabled": self.config.vision_enabled,
