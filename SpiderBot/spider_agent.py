@@ -45,6 +45,8 @@ class SpiderAgent:
         self.last_frame = None
         self.last_vision: dict[str, Any] | None = None
         self.last_action_count = 0
+        self.pending_drag: dict[str, Any] | None = None
+        self.drag_preview_seconds = 1.4
         self.phase = "idle"
         self.phase_detail = ""
         self.phase_started_at = time.time()
@@ -70,6 +72,7 @@ class SpiderAgent:
         self.last_state = None
         self.last_frame = None
         self.last_vision = None
+        self.pending_drag = None
         self._set_phase("idle", "Fenster ausgewählt")
 
     def set_model(self, model: str) -> None:
@@ -119,6 +122,7 @@ class SpiderAgent:
         self.stock_failed_clicks = 0
         self.last_action = None
         self.last_error = None
+        self.pending_drag = None
         self._learning_committed = False
         self._set_phase("idle", "Neue Partie")
 
@@ -371,6 +375,24 @@ class SpiderAgent:
         try:
             if action.kind == "deal":
                 x, y = ctl.normalized_to_client(stock_x, stock_y)
+                self.pending_drag = {
+                    "kind": "deal",
+                    "point": [round(float(x), 1), round(float(y), 1)],
+                    "action": "STOCK",
+                    "preview_seconds": self.drag_preview_seconds,
+                }
+                self._set_phase(
+                    "drag_preview",
+                    f"Vorschau STOCK · {self.drag_preview_seconds:.1f}s · Alt+L = Abbruch",
+                )
+                deadline = time.time() + self.drag_preview_seconds
+                while time.time() < deadline:
+                    if input_abort_requested():
+                        self.pending_drag = None
+                        raise SpiderAgentError("STOP_REQUESTED")
+                    time.sleep(0.03)
+
+                self.pending_drag = None
                 self._set_phase("input_drag", "Stock: linke Taste drücken und loslassen")
                 result = ctl.held_mouse_click(x, y, hold_ms=110)
                 input_used = "held_mouse_click"
@@ -402,6 +424,35 @@ class SpiderAgent:
                         "Der Drag wurde NICHT ausgeführt."
                     )
 
+                self.pending_drag = {
+                    "kind": "move",
+                    "action": action.notation(),
+                    "source_column": None if action.source is None else action.source + 1,
+                    "destination_column": None if action.destination is None else action.destination + 1,
+                    "start": [round(float(start[0]), 1), round(float(start[1]), 1)],
+                    "end": [round(float(end[0]), 1), round(float(end[1]), 1)],
+                    "source_surface": src_surface,
+                    "destination_surface": dst_surface,
+                    "preview_seconds": self.drag_preview_seconds,
+                }
+                debug["preview"] = dict(self.pending_drag)
+                self._set_phase(
+                    "drag_preview",
+                    f"Vorschau {action.notation()} · START/ ZIEL im Livebild · "
+                    f"{self.drag_preview_seconds:.1f}s · Alt+L = Abbruch",
+                )
+
+                deadline = time.time() + self.drag_preview_seconds
+                while time.time() < deadline:
+                    if input_abort_requested():
+                        self.pending_drag = None
+                        raise SpiderAgentError("STOP_REQUESTED")
+                    time.sleep(0.03)
+
+                self.pending_drag = None
+                if input_abort_requested():
+                    raise SpiderAgentError("STOP_REQUESTED")
+
                 self._set_phase(
                     "input_drag",
                     f"Karte ziehen: DOWN → HALTEN+BEWEGEN → UP ({action.notation()})",
@@ -425,6 +476,7 @@ class SpiderAgent:
             return diff >= 0.0015, diff, after, input_used, debug
 
         except Exception as exc:
+            self.pending_drag = None
             try:
                 after = ctl.capture()
                 diff = frame_difference(before, after)
@@ -850,10 +902,65 @@ class SpiderAgent:
         self.learning.finish_game(self.config.model, self.trajectory, won)
         self._learning_committed = True
 
+    def _draw_drag_preview(self, frame):
+        preview = self.pending_drag
+        if not preview:
+            return frame
+
+        canvas = frame.copy()
+        kind = preview.get("kind")
+        if kind == "move":
+            start = preview.get("start")
+            end = preview.get("end")
+            if (
+                isinstance(start, (list, tuple)) and len(start) == 2
+                and isinstance(end, (list, tuple)) and len(end) == 2
+            ):
+                sx, sy = int(round(start[0])), int(round(start[1]))
+                ex, ey = int(round(end[0])), int(round(end[1]))
+
+                # High-contrast preview: START circle, TARGET circle and path.
+                cv2.line(canvas, (sx, sy), (ex, ey), (0, 220, 255), 4, cv2.LINE_AA)
+                cv2.circle(canvas, (sx, sy), 18, (40, 40, 255), 4, cv2.LINE_AA)
+                cv2.circle(canvas, (ex, ey), 22, (60, 255, 60), 4, cv2.LINE_AA)
+
+                cv2.putText(
+                    canvas, "START", (sx + 22, max(28, sy - 10)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.72, (40, 40, 255), 2, cv2.LINE_AA,
+                )
+                cv2.putText(
+                    canvas, "ZIEL", (ex + 26, max(28, ey - 10)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.72, (60, 255, 60), 2, cv2.LINE_AA,
+                )
+
+                action = str(preview.get("action") or "")
+                if action:
+                    cv2.putText(
+                        canvas,
+                        f"GEPLANT: {action}",
+                        (22, max(38, int(canvas.shape[0] * 0.06))),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.78,
+                        (0, 220, 255),
+                        2,
+                        cv2.LINE_AA,
+                    )
+        elif kind == "deal":
+            point = preview.get("point")
+            if isinstance(point, (list, tuple)) and len(point) == 2:
+                x, y = int(round(point[0])), int(round(point[1]))
+                cv2.circle(canvas, (x, y), 22, (0, 220, 255), 4, cv2.LINE_AA)
+                cv2.putText(
+                    canvas, "STOCK", (x + 26, max(28, y - 10)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.72, (0, 220, 255), 2, cv2.LINE_AA,
+                )
+        return canvas
+
     def frame_jpeg(self) -> bytes:
         ctl = self._require_controller()
         frame = ctl.capture()
-        ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
+        frame = self._draw_drag_preview(frame)
+        ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 86])
         if not ok:
             raise SpiderAgentError("Screenshot konnte nicht als JPEG kodiert werden.")
         return encoded.tobytes()
@@ -896,6 +1003,7 @@ class SpiderAgent:
             "phase_detail": self.phase_detail,
             "phase_elapsed_seconds": round(max(0.0, time.time() - self.phase_started_at), 1),
             "last_action": self.last_action,
+            "pending_drag": self.pending_drag,
             "last_vision": self.last_vision,
             "state": self.last_state.to_dict() if self.last_state else None,
             "laya": spider_models.laya_status(),
