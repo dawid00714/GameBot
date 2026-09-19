@@ -18,7 +18,7 @@ from spider_state import ocr_status, warm_ocr
 from spider_windows import WindowAutomationError, list_windows
 from vm_guest_input import clear_input_abort, request_input_abort
 
-app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="4.9.0")
+app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="5.0.0")
 agent = SpiderAgent()
 agent_lock = threading.RLock()
 step_lock = threading.Lock()
@@ -166,35 +166,47 @@ def _toggle_from_hotkey() -> None:
 
 
 def _hotkey_loop() -> None:
+    """Robust global Alt+L detector.
+
+    RegisterHotKey can fail or be swallowed by other Windows software. Polling
+    GetAsyncKeyState reads the physical key state system-wide and therefore
+    works even while Solitaire has focus.
+    """
     if os.name != "nt":
         runtime["hotkey_error"] = "Globaler Hotkey ist nur unter Windows verfügbar."
         return
 
     user32 = ctypes.windll.user32
-    HOTKEY_ID = 0x4C59
-    MOD_ALT = 0x0001
-    MOD_NOREPEAT = 0x4000
+    VK_MENU = 0x12
     VK_L = 0x4C
-    WM_HOTKEY = 0x0312
 
-    ok = bool(user32.RegisterHotKey(None, HOTKEY_ID, MOD_ALT | MOD_NOREPEAT, VK_L))
-    runtime["hotkey_registered"] = ok
-    if not ok:
-        runtime["hotkey_error"] = "Alt+L konnte nicht registriert werden."
-        return
+    runtime["hotkey_registered"] = True
+    runtime["hotkey_error"] = None
+    was_down = False
 
-    msg = wintypes.MSG()
-    try:
-        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
-            if msg.message == WM_HOTKEY and int(msg.wParam) == HOTKEY_ID:
+    while True:
+        try:
+            alt_down = bool(user32.GetAsyncKeyState(VK_MENU) & 0x8000)
+            l_down = bool(user32.GetAsyncKeyState(VK_L) & 0x8000)
+            combo = alt_down and l_down
+
+            if combo and not was_down:
                 _toggle_from_hotkey()
-    finally:
-        user32.UnregisterHotKey(None, HOTKEY_ID)
+                runtime["hotkey_last"] = (
+                    "stop" if runtime["stopping"] else "start"
+                ) if runtime["hotkey_last"] != "error" else "error"
+
+            was_down = combo
+            time.sleep(0.025)
+        except Exception as exc:
+            runtime["hotkey_registered"] = False
+            runtime["hotkey_error"] = f"{type(exc).__name__}: {exc}"
+            time.sleep(1.0)
 
 
 threading.Thread(
     target=_hotkey_loop,
-    name="spider-alt-l-hotkey",
+    name="spider-alt-l-poller",
     daemon=True,
 ).start()
 
@@ -208,7 +220,7 @@ def index():
 def health():
     return {
         "ok": True,
-        "version": "4.9.0",
+        "version": "5.0.0",
         "windows_agent": True,
         "ocr_fallback": ocr_status(),
     }
@@ -414,7 +426,7 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
     <h1><span class="pink">Laya</span> / <span class="cyan">TypeSafe Jev</span> · Windows Spider Agent</h1>
     <div class="muted">Echte Windows-Maus aktiv · Alt+L startet/stoppt den Agenten sofort · Live-Screenshot</div>
   </div>
-  <div class="small muted">Build 4.9</div>
+  <div class="small muted">Build 5.0</div>
 </header>
 
 <main>
