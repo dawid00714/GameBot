@@ -384,6 +384,77 @@ class SpiderAgent:
 
         accepted = bool(changed_pixels and board_changed)
 
+        # If UIA only produced a visual selection highlight (or the WM_MOUSE
+        # route was rejected), try Spider's keyboard navigation before giving
+        # up. This still does not touch the user's real keyboard or mouse.
+        if not accepted:
+            ctl = self._require_controller()
+            self._set_phase(
+                "input_keyboard",
+                f"Tastatur-Navigation {selected.notation()} ohne echte Eingabegeräte",
+            )
+            try:
+                if selected.kind == "deal":
+                    keyboard_result = ctl.keyboard_spider_deal()
+                else:
+                    assert selected.source is not None
+                    assert selected.destination is not None
+                    assert selected.start_index is not None
+                    visible_count = len(state.columns[selected.source].cards)
+
+                    keyboard_result = ctl.keyboard_spider_move(
+                        selected.source,
+                        selected.destination,
+                        selected.start_index,
+                        visible_count,
+                        vertical_from_top=True,
+                    )
+
+                input_debug.setdefault("attempts", []).append(
+                    {"mode": "background_keyboard", "result": keyboard_result}
+                )
+                time.sleep(self.config.action_delay)
+
+                self._set_phase("verify_keyboard", "Tastatur-Zug verifizieren")
+                keyboard_state, keyboard_frame = self.observe(use_vision=False)
+                keyboard_sig = state_signature(keyboard_state)
+                keyboard_diff = frame_difference(before, keyboard_frame)
+
+                if keyboard_sig != sig:
+                    accepted = True
+                    board_changed = True
+                    diff = keyboard_diff
+                    input_used = "background_keyboard"
+                    next_state = keyboard_state
+                elif selected.kind == "move":
+                    # Try the opposite vertical normalization once. Microsoft
+                    # Solitaire versions differ in how Up/Down enter a column.
+                    keyboard_result_2 = ctl.keyboard_spider_move(
+                        selected.source,
+                        selected.destination,
+                        selected.start_index,
+                        visible_count,
+                        vertical_from_top=False,
+                    )
+                    input_debug.setdefault("attempts", []).append(
+                        {"mode": "background_keyboard_reverse", "result": keyboard_result_2}
+                    )
+                    time.sleep(self.config.action_delay)
+                    keyboard_state_2, keyboard_frame_2 = self.observe(use_vision=False)
+                    keyboard_sig_2 = state_signature(keyboard_state_2)
+                    keyboard_diff_2 = frame_difference(before, keyboard_frame_2)
+                    if keyboard_sig_2 != sig:
+                        accepted = True
+                        board_changed = True
+                        diff = keyboard_diff_2
+                        input_used = "background_keyboard_reverse"
+                        next_state = keyboard_state_2
+            except Exception as exc:
+                input_debug.setdefault("attempts", []).append({
+                    "mode": "background_keyboard",
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+
         if selected.kind == "deal":
             if accepted:
                 self.stock_deals_used += 1
@@ -395,7 +466,7 @@ class SpiderAgent:
             self.failed_actions.setdefault(sig, set()).add(selected.notation())
             self._set_phase(
                 "input_rejected",
-                "Weder UIA noch Hintergrund-Eingabe hat den Spielzustand geändert",
+                "UIA, Hintergrundmaus und Hintergrund-Tastatur ohne Brettänderung",
             )
             self.last_action = {
                 "model": self.config.model,
@@ -409,9 +480,10 @@ class SpiderAgent:
                 "stock_failed_clicks": self.stock_failed_clicks,
                 "model_debug": model_debug,
                 "warning": (
-                    "SpiderBot hat zuerst UI Automation und danach Hintergrund-"
-                    "WM_MOUSE versucht. Die echte Maus wurde nicht bewegt. "
-                    "Der erkannte Spielzustand hat sich nicht geändert."
+                    "SpiderBot hat UI Automation, Hintergrund-WM_MOUSE und "
+                    "Hintergrund-Tastaturnavigation versucht. Die echte Maus "
+                    "und Tastatur wurden nicht übernommen. Der erkannte "
+                    "Spielzustand hat sich nicht geändert."
                 ),
             }
             return self.status()
@@ -475,6 +547,7 @@ class SpiderAgent:
                 "action_delay": self.config.action_delay,
                 "input_mode": "uia_then_background_messages",
                 "physical_mouse_touched": False,
+                "physical_keyboard_touched": False,
                 "foreground_window_changed": False,
                 "vision_enabled": self.config.vision_enabled,
                 "vision_model": self.config.vision_model,
