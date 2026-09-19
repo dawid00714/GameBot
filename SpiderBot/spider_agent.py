@@ -439,6 +439,58 @@ class SpiderAgent:
         except spider_models.SpiderModelError as exc:
             raise SpiderAgentError(str(exc)) from exc
 
+        # Deterministic strategy guard. Laya/Jev is a chooser, not a Spider
+        # engine, so it may occasionally prefer a legal but obviously wasteful
+        # option. The rule/search layer vetoes only clearly inferior choices.
+        ranked = sorted(
+            actions,
+            key=lambda a: (a.total_score, a.lookahead_score, a.immediate_score),
+            reverse=True,
+        )
+        best = ranked[0]
+        original_selected = selected
+        override_reason = None
+
+        nonempty = [
+            a for a in ranked
+            if a.kind == "move" and not a.features.get("empty_destination", 0.0)
+        ]
+        if (
+            selected.kind == "move"
+            and selected.features.get("empty_destination", 0.0)
+            and not selected.features.get("reveal_hidden", 0.0)
+            and nonempty
+        ):
+            selected = nonempty[0]
+            override_reason = "leeres Feld ohne Aufdecken vermieden"
+        elif (
+            selected.kind == "deal"
+            and any(a.kind == "move" and a.total_score >= 0 for a in ranked)
+        ):
+            selected = next(a for a in ranked if a.kind == "move" and a.total_score >= 0)
+            override_reason = "unnötiges Nachziehen vermieden"
+        elif selected.total_score < best.total_score - 24.0:
+            selected = best
+            override_reason = (
+                f"Modellwahl deutlich schlechter als Suchheuristik "
+                f"({original_selected.total_score:.1f} vs {best.total_score:.1f})"
+            )
+
+        if override_reason:
+            model_debug["strategy_guard"] = {
+                "overridden": True,
+                "reason": override_reason,
+                "model_selected": original_selected.notation(),
+                "executed": selected.notation(),
+                "model_score": round(original_selected.total_score, 3),
+                "executed_score": round(selected.total_score, 3),
+            }
+        else:
+            model_debug["strategy_guard"] = {
+                "overridden": False,
+                "executed": selected.notation(),
+            }
+
         self._set_phase("input", f"Maus-Drag {selected.notation()}")
         changed_pixels, diff, after, input_used, input_debug = self._execute(
             state,
