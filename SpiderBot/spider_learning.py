@@ -358,7 +358,9 @@ class SpiderLearning:
         if action.features.get("complete_run"):
             reward += 4.0
         if action.kind == "deal":
-            reward -= 0.35
+            # Dealing is only allowed when no tableau move exists. Keep a
+            # noticeable cost so the Q-network never learns STOCK as a shortcut.
+            reward -= 1.25
         if action.features.get("empty_destination") and not action.features.get("reveal_hidden"):
             reward -= 0.45
 
