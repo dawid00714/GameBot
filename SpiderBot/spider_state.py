@@ -87,6 +87,7 @@ class SpiderState:
     height: int
     columns: list[ColumnState]
     stock_available: bool
+    stock_point: tuple[float, float] | None
     reader: str
     diagnostics: list[str] = field(default_factory=list)
 
@@ -95,6 +96,7 @@ class SpiderState:
             "width": self.width,
             "height": self.height,
             "stock_available": self.stock_available,
+            "stock_point": list(self.stock_point) if self.stock_point else None,
             "reader": self.reader,
             "columns": [c.to_dict() for c in self.columns],
             "diagnostics": self.diagnostics[-20:],
@@ -132,9 +134,50 @@ def _parse_suit(text: str) -> str:
 
 
 def _column_centers(width: int) -> list[float]:
-    # Microsoft Spider layout seen in the supplied screenshot. These are client
-    # ratios, not screen coordinates, so resizing keeps them aligned.
-    return [width * (0.115 + i * 0.085) for i in range(10)]
+    # Fallback only. The actual centers are derived from observed card X values
+    # whenever possible.
+    return [width * (0.09 + i * 0.091) for i in range(10)]
+
+
+def _observed_column_centers(cards: list[VisibleCard], width: int) -> list[float] | None:
+    """Derive the ten tableau columns from the cards that are actually visible.
+
+    The previous fixed ratios were too brittle when the Microsoft Solitaire
+    window was resized. UIA normally reports several cards with exactly the
+    same X center per column, so simple 1-D clustering is enough.
+    """
+    if len(cards) < 8:
+        return None
+
+    xs = sorted(float(c.x) for c in cards)
+    tolerance = max(8.0, width * 0.022)
+    groups: list[list[float]] = []
+    for x in xs:
+        if not groups or abs(x - (sum(groups[-1]) / len(groups[-1]))) > tolerance:
+            groups.append([x])
+        else:
+            groups[-1].append(x)
+
+    # Remove obvious non-tableau singleton noise if there are more than ten
+    # clusters, preferring clusters with more observations.
+    if len(groups) > 10:
+        ranked = sorted(
+            enumerate(groups),
+            key=lambda item: (len(item[1]), -abs((sum(item[1]) / len(item[1])) - width / 2)),
+            reverse=True,
+        )[:10]
+        groups = [g for _idx, g in sorted(ranked, key=lambda item: sum(item[1]) / len(item[1]))]
+
+    if len(groups) != 10:
+        return None
+
+    centers = [sum(g) / len(g) for g in groups]
+    # Sanity-check roughly even spacing.
+    gaps = [centers[i + 1] - centers[i] for i in range(9)]
+    median_gap = sorted(gaps)[len(gaps) // 2]
+    if median_gap <= 0 or any(g < median_gap * 0.55 or g > median_gap * 1.65 for g in gaps):
+        return None
+    return centers
 
 
 def _group_cards(
@@ -143,20 +186,7 @@ def _group_cards(
     height: int,
     frame: np.ndarray | None = None,
 ) -> list[ColumnState]:
-    centers = _column_centers(width)
-
-    # If we have enough detected cards, derive centers from their x positions.
-    xs = sorted(c.x for c in cards)
-    if len(xs) >= 8:
-        # Cluster x centers by nearest predefined column, then use cluster means.
-        buckets: list[list[float]] = [[] for _ in range(10)]
-        for x in xs:
-            idx = min(range(10), key=lambda i: abs(centers[i] - x))
-            if abs(centers[idx] - x) < width * 0.06:
-                buckets[idx].append(x)
-        for i, vals in enumerate(buckets):
-            if vals:
-                centers[i] = sum(vals) / len(vals)
+    centers = _observed_column_centers(cards, width) or _column_centers(width)
 
     cols = [ColumnState(index=i, x=centers[i]) for i in range(10)]
     for card in cards:
@@ -298,7 +328,45 @@ def _read_ocr(frame: np.ndarray) -> tuple[list[VisibleCard], list[str]]:
     return cards, diag
 
 
-def _detect_stock(frame: np.ndarray, nx: float, ny: float) -> bool:
+def _find_stock(frame: np.ndarray) -> tuple[bool, tuple[float, float] | None]:
+    """Find the purple Spider stock automatically in the lower-right play area."""
+    h, w = frame.shape[:2]
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    H, S, V = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+
+    mask = ((H >= 130) & (H <= 178) & (S > 55) & (V > 45)).astype(np.uint8) * 255
+
+    # Hidden card backs live near the top. The deal stock lives lower and to
+    # the right, so exclude the tableau rows and bottom toolbar.
+    roi_mask = np.zeros_like(mask)
+    y0, y1 = int(h * 0.45), int(h * 0.84)
+    x0, x1 = int(w * 0.50), int(w * 0.98)
+    roi_mask[y0:y1, x0:x1] = mask[y0:y1, x0:x1]
+
+    kernel = np.ones((5, 5), np.uint8)
+    roi_mask = cv2.morphologyEx(roi_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    contours, _ = cv2.findContours(roi_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    candidates: list[tuple[float, tuple[float, float]]] = []
+    for cnt in contours:
+        x, y, cw, ch = cv2.boundingRect(cnt)
+        area = cv2.contourArea(cnt)
+        if area < w * h * 0.0006:
+            continue
+        if cw < w * 0.018 or ch < h * 0.045:
+            continue
+        # Prefer a card-sized blob in the lower-right playfield.
+        score = area + x * 0.15 + y * 0.05
+        candidates.append((score, ((x + cw / 2) / w, (y + ch / 2) / h)))
+
+    if not candidates:
+        return False, None
+
+    _score, point = max(candidates, key=lambda item: item[0])
+    return True, point
+
+
+def _detect_stock_at_point(frame: np.ndarray, nx: float, ny: float) -> bool:
     h, w = frame.shape[:2]
     cx = int(max(0, min(w - 1, nx * w)))
     cy = int(max(0, min(h - 1, ny * h)))
@@ -309,9 +377,8 @@ def _detect_stock(frame: np.ndarray, nx: float, ny: float) -> bool:
         return False
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
     H, S, V = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
-    purple = ((H >= 135) & (H <= 175) & (S > 45) & (V > 40)).mean()
-    # Card back in the supplied theme is strongly purple/magenta.
-    return bool(purple > 0.04)
+    purple = ((H >= 130) & (H <= 178) & (S > 50) & (V > 40)).mean()
+    return bool(purple > 0.035)
 
 
 def read_state(
@@ -334,7 +401,30 @@ def read_state(
         reader = "ocr" if cards is ocr_cards else "uia-partial"
 
     cols = _group_cards(cards, width, height, frame)
-    stock = _detect_stock(frame, stock_point[0], stock_point[1])
+
+    auto_stock, auto_point = _find_stock(frame)
+    if auto_stock and auto_point is not None:
+        stock = True
+        effective_stock_point = auto_point
+        diag.append(
+            f"Stock automatisch erkannt bei X={auto_point[0]:.3f}, Y={auto_point[1]:.3f}"
+        )
+    else:
+        stock = _detect_stock_at_point(frame, stock_point[0], stock_point[1])
+        effective_stock_point = stock_point if stock else None
+        if stock:
+            diag.append(
+                f"Stock über manuellen Fallback erkannt bei X={stock_point[0]:.3f}, Y={stock_point[1]:.3f}"
+            )
+
+    legal_top_pairs = []
+    tops = [(c.index, c.cards[-1]) for c in cols if c.cards]
+    for si, sc in tops:
+        for di, dc in tops:
+            if si != di and dc.value == sc.value + 1:
+                legal_top_pairs.append(f"C{si+1}:{sc.rank}->C{di+1}:{dc.rank}")
+    if legal_top_pairs:
+        diag.append("Plausible Top-Card-Züge: " + ", ".join(legal_top_pairs[:8]))
 
     if sum(len(c.cards) for c in cols) < 5:
         diag.append(
@@ -347,6 +437,7 @@ def read_state(
         height=height,
         columns=cols,
         stock_available=stock,
+        stock_point=effective_stock_point,
         reader=reader,
         diagnostics=diag,
     )
