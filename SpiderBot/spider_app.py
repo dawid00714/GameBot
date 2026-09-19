@@ -13,7 +13,7 @@ import spider_ollama
 from spider_agent import SpiderAgent, SpiderAgentError
 from spider_windows import WindowAutomationError, list_windows
 
-app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="4.0.0")
+app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="4.1.0")
 agent = SpiderAgent()
 agent_lock = threading.RLock()
 step_lock = threading.Lock()
@@ -41,7 +41,7 @@ class ConfigRequest(BaseModel):
     depth: int = Field(default=3, ge=1, le=5)
     learning: bool = True
     action_delay: float = Field(default=0.85, ge=0.15, le=5.0)
-    vision_enabled: bool = False
+    vision_enabled: bool = True
     vision_model: str = ""
 
 
@@ -123,7 +123,7 @@ def index():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "version": "4.0.0", "windows_agent": True}
+    return {"ok": True, "version": "4.1.0", "windows_agent": True}
 
 
 @app.get("/api/ollama/models")
@@ -339,7 +339,7 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
     <h1><span class="pink">Laya</span> / <span class="cyan">TypeSafe Jev</span> · Windows Spider Agent</h1>
     <div class="muted">Nur Hintergrund-Eingabe · echte Maus bleibt unberührt · kein Fokuswechsel · Live-Screenshot</div>
   </div>
-  <div class="small muted">Build 4.0</div>
+  <div class="small muted">Build 4.1</div>
 </header>
 
 <main>
@@ -390,13 +390,13 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
       <div id="modelStatus" class="small muted" style="margin-top:8px"></div>
       <hr>
       <div class="row">
-        <label class="check"><input id="visionEnabled" type="checkbox"> Ollama-Vision als Bild-Hilfe verwenden</label>
+        <label class="check"><input id="visionEnabled" type="checkbox" checked> Ollama-Vision übernimmt die Kartenerkennung</label>
       </div>
       <div class="row" style="margin-top:8px">
         <select id="visionModel" style="flex:1"><option value="">Vision-Modelle laden…</option></select>
         <button id="refreshOllama">Ollama aktualisieren</button>
       </div>
-      <div id="ollamaStatus" class="small muted" style="margin-top:7px">Lokale Vision-Modelle werden aus Ollama erkannt.</div>
+      <div id="ollamaStatus" class="small muted" style="margin-top:7px">Ollama ist der primäre Kartenleser. OCR wird nur noch bei einer unbrauchbaren Vision-Antwort verwendet.</div>
     </section>
 
     <section class="card panel">
@@ -516,8 +516,17 @@ async function refreshOllama(){
       o.textContent=label;
       sel.appendChild(o);
     }
-    if(previous && [...sel.options].some(o=>o.value===previous)) sel.value=previous;
-    $('ollamaStatus').innerHTML='<span class="ok">'+data.vision_models.length+' Vision-Modell(e) erkannt.</span>';
+    if(previous && [...sel.options].some(o=>o.value===previous)){
+      sel.value=previous;
+    }else{
+      // Prefer the user's small local Qwen-VL model when present, otherwise
+      // use the first installed vision model.
+      const preferred=[...sel.options].find(o=>/qwen.*vl.*2b/i.test(o.value));
+      if(preferred) sel.value=preferred.value;
+    }
+    $('visionEnabled').checked=true;
+    $('ollamaStatus').innerHTML='<span class="ok">'+data.vision_models.length+' Vision-Modell(e) erkannt · Ollama übernimmt Kartenlesen.</span>';
+    try{ await saveConfig(); }catch(_){}
   }catch(e){
     sel.innerHTML='<option value="">Ollama nicht erreichbar</option>';
     $('ollamaStatus').innerHTML='<span class="bad">'+e.message+'</span>';
@@ -601,7 +610,7 @@ async function refreshStatus(){
     $('runBadge').textContent=d.runtime.running?'läuft':'gestoppt';
     $('runBadge').className='badge '+(d.runtime.running?'ok':'');
     $('modelBadge').textContent=d.config.model==='laya'?'Laya':'TypeSafe/Jev';
-    $('readerBadge').textContent='Vision: '+(d.state?.reader||'—');
+    $('readerBadge').textContent='Kartenleser: '+(d.config.vision_enabled && d.config.vision_model ? 'Ollama '+d.config.vision_model : (d.state?.reader||'—'));
 
     const ls=d.laya;
     const ts=d.typesafe;
