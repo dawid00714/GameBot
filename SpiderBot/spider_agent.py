@@ -372,6 +372,21 @@ class SpiderAgent:
             generate_actions(state),
             self.config.depth,
         )
+
+        # Second safety layer: even if future solver/model code accidentally
+        # reintroduces STOCK beside normal moves, remove it here before Laya,
+        # TypeSafe or Deep-RL sees the candidates.
+        tableau_actions = [a for a in actions if a.kind == "move"]
+        if tableau_actions:
+            actions = tableau_actions
+            state.diagnostics.append(
+                f"Stock gesperrt: {len(tableau_actions)} Tableau-Zug/Züge verfügbar."
+            )
+        else:
+            state.diagnostics.append(
+                "Kein Tableau-Zug verfügbar: Stock darf verwendet werden."
+            )
+
         self.last_action_count = len(actions)
 
         sig = state_signature(state)
@@ -480,12 +495,9 @@ class SpiderAgent:
         ):
             selected = nonempty[0]
             override_reason = "leeres Feld ohne Aufdecken vermieden"
-        elif (
-            selected.kind == "deal"
-            and any(a.kind == "move" and a.total_score >= 0 for a in ranked)
-        ):
-            selected = next(a for a in ranked if a.kind == "move" and a.total_score >= 0)
-            override_reason = "unnötiges Nachziehen vermieden"
+        elif selected.kind == "deal" and any(a.kind == "move" for a in ranked):
+            selected = next(a for a in ranked if a.kind == "move")
+            override_reason = "Stock ist gesperrt solange ein Tableau-Zug existiert"
         elif selected.total_score < best.total_score - 24.0:
             selected = best
             override_reason = (
