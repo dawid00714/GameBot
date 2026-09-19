@@ -436,6 +436,7 @@ class WindowController:
             "element": None,
             "attempts": attempts[:12],
             "physical_mouse_touched": False,
+            "physical_keyboard_touched": False,
             "foreground_changed": False,
         }
 
@@ -514,6 +515,193 @@ class WindowController:
             pass
 
         return self.uia_activate_at(fallback_point, source=False)
+
+    @staticmethod
+    def _key_lparam(vk: int, key_up: bool = False) -> int:
+        user32 = ctypes.windll.user32
+        scan = int(user32.MapVirtualKeyW(int(vk), 0)) & 0xFF
+        lp = 1 | (scan << 16)
+        if key_up:
+            lp |= (1 << 30) | (1 << 31)
+        return lp
+
+    def _send_key_message(self, hwnd: int, vk: int) -> bool:
+        """Send one key press without generating physical keyboard input."""
+        user32 = ctypes.windll.user32
+        down_lp = self._key_lparam(vk, False)
+        up_lp = self._key_lparam(vk, True)
+
+        ctypes.set_last_error(0)
+        down_ok = bool(user32.PostMessageW(
+            ctypes.c_void_p(int(hwnd)),
+            ctypes.c_uint(int(win32con.WM_KEYDOWN)),
+            ctypes.c_size_t(int(vk)),
+            ctypes.c_ssize_t(int(down_lp)),
+        ))
+        up_ok = bool(user32.PostMessageW(
+            ctypes.c_void_p(int(hwnd)),
+            ctypes.c_uint(int(win32con.WM_KEYUP)),
+            ctypes.c_size_t(int(vk)),
+            ctypes.c_ssize_t(int(up_lp)),
+        ))
+        if down_ok and up_ok:
+            return True
+
+        # Some packaged/XAML windows reject PostMessage but still process a
+        # synchronous keyboard message. SendMessageTimeout does not move the
+        # real mouse/keyboard and does not synthesize global input.
+        result = ctypes.c_size_t()
+        SMTO_ABORTIFHUNG = 0x0002
+        down_send = user32.SendMessageTimeoutW(
+            ctypes.c_void_p(int(hwnd)),
+            ctypes.c_uint(int(win32con.WM_KEYDOWN)),
+            ctypes.c_size_t(int(vk)),
+            ctypes.c_ssize_t(int(down_lp)),
+            ctypes.c_uint(SMTO_ABORTIFHUNG),
+            ctypes.c_uint(250),
+            ctypes.byref(result),
+        )
+        up_send = user32.SendMessageTimeoutW(
+            ctypes.c_void_p(int(hwnd)),
+            ctypes.c_uint(int(win32con.WM_KEYUP)),
+            ctypes.c_size_t(int(vk)),
+            ctypes.c_ssize_t(int(up_lp)),
+            ctypes.c_uint(SMTO_ABORTIFHUNG),
+            ctypes.c_uint(250),
+            ctypes.byref(result),
+        )
+        return bool(down_send and up_send)
+
+    def virtual_key(self, vk: int, repeats: int = 1, delay_ms: int = 45) -> dict[str, Any]:
+        """Background keyboard navigation; never uses SendInput/keybd_event."""
+        repeats = max(1, int(repeats))
+        targets: list[int] = []
+
+        # Prefer the same child surface UIA/background mouse resolved, then root.
+        if self.last_input_target and isinstance(self.last_input_target.get("hwnd"), int):
+            targets.append(int(self.last_input_target["hwnd"]))
+        if self.hwnd not in targets:
+            targets.append(self.hwnd)
+
+        errors: list[str] = []
+        for target in targets:
+            ok_all = True
+            for _ in range(repeats):
+                if not self._send_key_message(target, int(vk)):
+                    ok_all = False
+                    errors.append(f"HWND {target} rejected VK {vk}")
+                    break
+                time.sleep(max(0.005, delay_ms / 1000.0))
+            if ok_all:
+                self.last_input_target = {
+                    "mode": "background_keyboard",
+                    "hwnd": int(target),
+                    "vk": int(vk),
+                }
+                return {
+                    "ok": True,
+                    "target": int(target),
+                    "vk": int(vk),
+                    "repeats": repeats,
+                    "physical_mouse_touched": False,
+                    "physical_keyboard_touched": False,
+                    "foreground_changed": False,
+                }
+
+        return {
+            "ok": False,
+            "vk": int(vk),
+            "repeats": repeats,
+            "errors": errors,
+            "physical_mouse_touched": False,
+            "physical_keyboard_touched": False,
+            "foreground_changed": False,
+        }
+
+    def keyboard_spider_move(
+        self,
+        source_column: int,
+        destination_column: int,
+        start_index: int,
+        visible_count: int,
+        *,
+        vertical_from_top: bool = True,
+    ) -> dict[str, Any]:
+        """Attempt Spider move with arrow-key navigation + Enter.
+
+        Microsoft Solitaire has historically supported arrow-key navigation and
+        Enter for selecting/moving cards. This route remains fully background:
+        it sends window messages only and does not synthesize system input.
+        """
+        VK_ESCAPE = win32con.VK_ESCAPE
+        VK_LEFT = win32con.VK_LEFT
+        VK_RIGHT = win32con.VK_RIGHT
+        VK_UP = win32con.VK_UP
+        VK_DOWN = win32con.VK_DOWN
+        VK_RETURN = win32con.VK_RETURN
+
+        trace: list[dict[str, Any]] = []
+
+        def key(vk: int, repeats: int = 1) -> bool:
+            res = self.virtual_key(vk, repeats=repeats)
+            trace.append(res)
+            return bool(res.get("ok"))
+
+        # Cancel any previous selection. Repeated LEFT normalizes horizontal
+        # focus to the leftmost tableau item without knowing previous focus.
+        key(VK_ESCAPE)
+        if not key(VK_LEFT, 14):
+            return {"ok": False, "stage": "left-normalize", "trace": trace}
+
+        if source_column > 0 and not key(VK_RIGHT, source_column):
+            return {"ok": False, "stage": "source-column", "trace": trace}
+
+        # Normalize within the visible run, then select the requested start.
+        visible_count = max(1, int(visible_count))
+        start_index = max(0, min(int(start_index), visible_count - 1))
+        if vertical_from_top:
+            key(VK_UP, visible_count + 3)
+            if start_index > 0:
+                key(VK_DOWN, start_index)
+        else:
+            key(VK_DOWN, visible_count + 3)
+            from_bottom = (visible_count - 1) - start_index
+            if from_bottom > 0:
+                key(VK_UP, from_bottom)
+
+        if not key(VK_RETURN):
+            return {"ok": False, "stage": "select-source", "trace": trace}
+
+        delta = int(destination_column) - int(source_column)
+        if delta > 0:
+            if not key(VK_RIGHT, delta):
+                return {"ok": False, "stage": "destination-right", "trace": trace}
+        elif delta < 0:
+            if not key(VK_LEFT, -delta):
+                return {"ok": False, "stage": "destination-left", "trace": trace}
+
+        if not key(VK_RETURN):
+            return {"ok": False, "stage": "place", "trace": trace}
+
+        return {
+            "ok": True,
+            "stage": "complete",
+            "trace": trace,
+            "source_column": source_column,
+            "destination_column": destination_column,
+            "start_index": start_index,
+            "vertical_from_top": vertical_from_top,
+            "physical_mouse_touched": False,
+            "physical_keyboard_touched": False,
+            "foreground_changed": False,
+        }
+
+    def keyboard_spider_deal(self) -> dict[str, Any]:
+        """Try the Spider deal shortcut without physical keyboard input."""
+        # 'D' is the standard deal shortcut in current keyboard-accessible
+        # Spider implementations; if the app ignores it the caller verifies
+        # that no board change occurred and can try other mouse-free paths.
+        return self.virtual_key(ord("D"))
 
     def virtual_click(self, x: float, y: float, hold_ms: int = 70) -> None:
         point_client = (float(x), float(y))
