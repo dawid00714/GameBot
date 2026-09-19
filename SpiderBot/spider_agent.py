@@ -28,7 +28,7 @@ class SpiderConfig:
     learning: bool = True
     action_delay: float = 0.85
     input_mode: str = "background"
-    vision_enabled: bool = True
+    vision_enabled: bool = False
     vision_model: str = ""
 
 
@@ -138,7 +138,7 @@ class SpiderAgent:
             "read_state",
             "Karten mit UIA lesen; Ollama übernimmt Vision"
             if vision_primary
-            else "Karten mit UIA/OCR lesen",
+            else "Karten mit FastOCR lesen",
         )
         state = read_state(
             ctl.hwnd,
