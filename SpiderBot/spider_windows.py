@@ -222,6 +222,113 @@ class WindowController:
         time.sleep(max(0.01, hold_ms / 1000.0))
         win32gui.PostMessage(self.hwnd, win32con.WM_LBUTTONUP, 0, lp)
 
+
+    def _bring_to_front(self) -> int | None:
+        """Restore and foreground the game window for real SendInput-style mouse input."""
+        old_fg = None
+        try:
+            old_fg = win32gui.GetForegroundWindow()
+        except Exception:
+            pass
+
+        try:
+            if win32gui.IsIconic(self.hwnd):
+                win32gui.ShowWindow(self.hwnd, win32con.SW_RESTORE)
+                time.sleep(0.12)
+            win32gui.BringWindowToTop(self.hwnd)
+            win32gui.SetForegroundWindow(self.hwnd)
+            time.sleep(0.10)
+        except Exception:
+            # SetForegroundWindow is subject to Windows focus rules. The
+            # subsequent cursor/mouse_event input can still work if the game
+            # is already visible.
+            pass
+        return old_fg
+
+    def system_click(self, x: float, y: float, hold_ms: int = 70) -> None:
+        """Reliable foreground click using the Windows system cursor.
+
+        The current cursor position and foreground window are restored
+        immediately afterwards.
+        """
+        info = self.info
+        sx = info.left + int(round(x))
+        sy = info.top + int(round(y))
+        old_pos = win32api.GetCursorPos()
+        old_fg = self._bring_to_front()
+        try:
+            win32api.SetCursorPos((sx, sy))
+            time.sleep(0.04)
+            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+            time.sleep(max(0.02, hold_ms / 1000.0))
+            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+        finally:
+            try:
+                win32api.SetCursorPos(old_pos)
+            except Exception:
+                pass
+            if old_fg and old_fg != self.hwnd:
+                try:
+                    win32gui.SetForegroundWindow(old_fg)
+                except Exception:
+                    pass
+
+    def system_drag(
+        self,
+        start: tuple[float, float],
+        end: tuple[float, float],
+        duration_ms: int = 520,
+        steps: int = 30,
+    ) -> None:
+        """Reliable foreground drag: left button down, move held, release.
+
+        This is the fallback for games (including some Microsoft Store games)
+        that ignore background WM_MOUSE messages. The user's cursor position is
+        saved and restored after the drag.
+        """
+        info = self.info
+        sx = info.left + int(round(start[0]))
+        sy = info.top + int(round(start[1]))
+        ex = info.left + int(round(end[0]))
+        ey = info.top + int(round(end[1]))
+
+        old_pos = win32api.GetCursorPos()
+        old_fg = self._bring_to_front()
+        steps = max(6, int(steps))
+        delay = max(0.004, duration_ms / 1000.0 / steps)
+
+        try:
+            win32api.SetCursorPos((sx, sy))
+            time.sleep(0.05)
+            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+            time.sleep(delay)
+
+            for i in range(1, steps + 1):
+                t = i / steps
+                u = t * t * (3.0 - 2.0 * t)
+                x = int(round(sx + (ex - sx) * u))
+                y = int(round(sy + (ey - sy) * u))
+                win32api.SetCursorPos((x, y))
+                time.sleep(delay)
+
+            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+            time.sleep(0.04)
+        finally:
+            # Ensure the button is never left logically pressed after an error.
+            try:
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+            except Exception:
+                pass
+            try:
+                win32api.SetCursorPos(old_pos)
+            except Exception:
+                pass
+            if old_fg and old_fg != self.hwnd:
+                try:
+                    win32gui.SetForegroundWindow(old_fg)
+                except Exception:
+                    pass
+
     def virtual_drag(
         self,
         start: tuple[float, float],
@@ -269,9 +376,12 @@ class WindowController:
         ny = min(1.0, max(0.0, float(ny)))
         return int(nx * info.width), int(ny * info.height)
 
-    def click_normalized(self, nx: float, ny: float) -> None:
+    def click_normalized(self, nx: float, ny: float, mode: str = "background") -> None:
         x, y = self.normalized_to_client(nx, ny)
-        self.virtual_click(x, y)
+        if mode == "system":
+            self.system_click(x, y)
+        else:
+            self.virtual_click(x, y)
 
 
 def frame_difference(before: np.ndarray, after: np.ndarray) -> float:
