@@ -18,7 +18,7 @@ from spider_state import ocr_status, warm_ocr
 from spider_windows import WindowAutomationError, list_windows
 from vm_guest_input import clear_input_abort, request_input_abort
 
-app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="5.3.0")
+app = FastAPI(title="Laya / TypeSafe Windows Spider Agent", version="5.4.0")
 agent = SpiderAgent()
 agent_lock = threading.RLock()
 step_lock = threading.Lock()
@@ -227,7 +227,7 @@ def index():
 def health():
     return {
         "ok": True,
-        "version": "5.3.0",
+        "version": "5.4.0",
         "windows_agent": True,
         "ocr_fallback": ocr_status(),
     }
@@ -434,7 +434,7 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
     <h1><span class="pink">Laya</span> / <span class="cyan">TypeSafe Jev</span> · Windows Spider Agent</h1>
     <div class="muted">Echte Windows-Maus aktiv · Alt+L startet/stoppt den Agenten sofort · Live-Screenshot</div>
   </div>
-  <div class="small muted">Build 5.3</div>
+  <div class="small muted">Build 5.4</div>
 </header>
 
 <main>
@@ -504,7 +504,7 @@ hr{border:0;border-top:1px solid var(--line);margin:12px 0}
         </div>
       </div>
       <div id="stockStatus" class="small muted" style="margin-top:8px">Stock wird automatisch gesucht…</div>
-      <div class="small muted" style="margin-top:5px">Kartenerkennung läuft standardmäßig über UIA/FastOCR. SpiderBot verwendet deine echte Windows-Maus: Quellkarte anfahren → LEFTDOWN → gedrückt halten → am Ziel LEFTUP. Stock/Nachziehen ist hart gesperrt, solange ein legaler Tableau-Zug existiert. Vor jedem Drag prüft SpiderBot Quelle und Ziel direkt im Screenshot. UIA-Rechteckmittelpunkte werden nicht mehr als Mausziel benutzt; der Drag landet auf dem tatsächlich sichtbaren Kartenkopf statt im grünen Spielfeld. Alt+L startet/stoppt den Agenten global.</div>
+      <div class="small muted" style="margin-top:5px">Vor JEDEM Drag zeigt das Livebild zuerst 1,4 s lang die geplante Bewegung: ROT = START, GRÜN = ZIEL, GELBE LINIE = Pfad. Erst danach darf die echte Maus ziehen. Wenn die Markierung falsch aussieht: Alt+L drücken; dann wird der Zug vor der Mausbewegung abgebrochen. Stock bleibt gesperrt, solange ein legaler Tableau-Zug existiert.</div>
     </section>
 
     <section class="card panel">
@@ -766,7 +766,8 @@ async function refreshStatus(){
           hidden:c.hidden_above,
           cards:c.cards.map(x=>x.rank+x.suit)
         })),
-        diagnostics:d.state.diagnostics
+        diagnostics:d.state.diagnostics,
+        planned_drag:d.pending_drag||null
       };
       $('stateDump').textContent=JSON.stringify(concise,null,2);
     }
@@ -829,7 +830,7 @@ $('learning').addEventListener('change',saveConfig);
 refreshWindows();
 refreshOllama();
 refreshStatus();
-frameTimer=setInterval(()=>{refreshStatus();refreshFrame()},1200);
+frameTimer=setInterval(()=>{refreshStatus();refreshFrame()},450);
 </script>
 </body>
 </html>"""
