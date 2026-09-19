@@ -26,7 +26,7 @@ class SpiderConfig:
     stock_y: float = 0.78
     learning: bool = True
     action_delay: float = 0.85
-    input_mode: str = "auto"
+    input_mode: str = "background"
 
 
 class SpiderAgent:
@@ -83,11 +83,9 @@ class SpiderAgent:
             self.config.learning = bool(learning)
         if action_delay is not None:
             self.config.action_delay = max(0.15, min(float(action_delay), 5.0))
-        if input_mode is not None:
-            mode = str(input_mode).strip().lower()
-            if mode not in ("auto", "background", "system"):
-                raise SpiderAgentError("Mausmodus muss auto, background oder system sein.")
-            self.config.input_mode = mode
+        # SpiderBot is intentionally background-only. It must never move the
+        # user's real cursor or activate/raise the game window.
+        self.config.input_mode = "background"
 
     def reset_episode(self) -> None:
         self.moves = 0
@@ -175,7 +173,6 @@ class SpiderAgent:
         before,
     ) -> tuple[bool, float, Any, str]:
         ctl = self._require_controller()
-        mode = self.config.input_mode
 
         start = None
         end = None
@@ -183,46 +180,38 @@ class SpiderAgent:
             start = self._source_point(state, action)
             end = self._destination_point(state, action)
 
-        # First try a true background/virtual mouse. Microsoft Solitaire can
-        # ignore WM_MOUSE messages, so AUTO falls back to reliable system input.
         stock_x, stock_y = (
             state.stock_point
             if state.stock_point is not None
             else (self.config.stock_x, self.config.stock_y)
         )
 
-        if mode in ("auto", "background"):
-            if action.kind == "deal":
-                ctl.click_normalized(
-                    stock_x,
-                    stock_y,
-                    mode="background",
-                )
-            else:
-                assert start is not None and end is not None
-                ctl.virtual_drag(start, end, duration_ms=460, steps=30)
-
-            time.sleep(self.config.action_delay)
-            after = ctl.capture()
-            diff = frame_difference(before, after)
-            if diff >= 0.0015:
-                return True, diff, after, "background"
-            if mode == "background":
-                return False, diff, after, "background"
-
-        # Reliable fallback. The cursor is restored immediately after the
-        # action, so the agent does not leave the user's mouse displaced.
+        # STRICTLY background-only. No SetCursorPos, SendInput, mouse_event,
+        # SetForegroundWindow, BringWindowToTop, ShowWindow or focus switching.
         if action.kind == "deal":
-            x, y = ctl.normalized_to_client(stock_x, stock_y)
-            ctl.system_click(x, y)
+            ctl.click_normalized(stock_x, stock_y)
         else:
             assert start is not None and end is not None
-            ctl.system_drag(start, end, duration_ms=560, steps=34)
+            ctl.virtual_drag(start, end, duration_ms=520, steps=34)
 
         time.sleep(self.config.action_delay)
         after = ctl.capture()
         diff = frame_difference(before, after)
-        return diff >= 0.0015, diff, after, "system"
+
+        # One slower retry is allowed, still using only background WM_MOUSE
+        # messages. If Microsoft Solitaire rejects them, report failure instead
+        # of ever touching the real mouse.
+        if diff < 0.0015:
+            if action.kind == "deal":
+                ctl.click_normalized(stock_x, stock_y)
+            else:
+                assert start is not None and end is not None
+                ctl.virtual_drag(start, end, duration_ms=760, steps=48)
+            time.sleep(self.config.action_delay)
+            after = ctl.capture()
+            diff = frame_difference(before, after)
+
+        return diff >= 0.0015, diff, after, "background_only"
 
     def step(self) -> dict[str, Any]:
         self.last_error = None
@@ -386,7 +375,9 @@ class SpiderAgent:
                 "stock_y": round(self.config.stock_y, 4),
                 "learning": self.config.learning,
                 "action_delay": self.config.action_delay,
-                "input_mode": self.config.input_mode,
+                "input_mode": "background_only",
+                "physical_mouse_touched": False,
+                "foreground_window_changed": False,
                 "stock_deals_used": self.stock_deals_used,
                 "stock_failed_clicks": self.stock_failed_clicks,
             },
@@ -401,4 +392,10 @@ class SpiderAgent:
             "laya": spider_models.laya_status(),
             "typesafe": spider_models.typesafe_status(),
             "learning": self.learning.summary(),
+            "input_status": self.controller.input_status() if self.controller is not None else {
+                "mode": "background_only",
+                "physical_mouse_touched": False,
+                "foreground_changed": False,
+                "target": None,
+            },
         }
