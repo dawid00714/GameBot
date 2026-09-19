@@ -26,6 +26,7 @@ class SpiderConfig:
     stock_y: float = 0.78
     learning: bool = True
     action_delay: float = 0.85
+    input_mode: str = "auto"
 
 
 class SpiderAgent:
@@ -43,6 +44,8 @@ class SpiderAgent:
         self.game_won = False
         self.trajectory: list[dict[str, Any]] = []
         self.failed_actions: dict[str, set[str]] = {}
+        self.stock_deals_used = 0
+        self.stock_failed_clicks = 0
         self._learning_committed = False
 
     def select_window(self, hwnd: int) -> None:
@@ -65,13 +68,25 @@ class SpiderAgent:
         self.config.stock_x = min(1.0, max(0.0, float(x)))
         self.config.stock_y = min(1.0, max(0.0, float(y)))
 
-    def configure(self, *, depth: int | None = None, learning: bool | None = None, action_delay: float | None = None) -> None:
+    def configure(
+        self,
+        *,
+        depth: int | None = None,
+        learning: bool | None = None,
+        action_delay: float | None = None,
+        input_mode: str | None = None,
+    ) -> None:
         if depth is not None:
             self.config.depth = max(1, min(int(depth), 5))
         if learning is not None:
             self.config.learning = bool(learning)
         if action_delay is not None:
             self.config.action_delay = max(0.15, min(float(action_delay), 5.0))
+        if input_mode is not None:
+            mode = str(input_mode).strip().lower()
+            if mode not in ("auto", "background", "system"):
+                raise SpiderAgentError("Mausmodus muss auto, background oder system sein.")
+            self.config.input_mode = mode
 
     def reset_episode(self) -> None:
         self.moves = 0
@@ -79,6 +94,8 @@ class SpiderAgent:
         self.game_won = False
         self.trajectory = []
         self.failed_actions = {}
+        self.stock_deals_used = 0
+        self.stock_failed_clicks = 0
         self.last_action = None
         self.last_error = None
         self._learning_committed = False
@@ -147,31 +164,55 @@ class SpiderAgent:
             y = state.height * 0.31
         return x, y
 
-    def _execute(self, state: SpiderState, action: SpiderAction, before) -> tuple[bool, float, Any]:
+    def _execute(
+        self,
+        state: SpiderState,
+        action: SpiderAction,
+        before,
+    ) -> tuple[bool, float, Any, str]:
         ctl = self._require_controller()
+        mode = self.config.input_mode
 
-        if action.kind == "deal":
-            ctl.click_normalized(self.config.stock_x, self.config.stock_y)
-        else:
+        start = None
+        end = None
+        if action.kind == "move":
             start = self._source_point(state, action)
             end = self._destination_point(state, action)
-            ctl.virtual_drag(start, end, duration_ms=430, steps=28)
+
+        # First try a true background/virtual mouse. Microsoft Solitaire can
+        # ignore WM_MOUSE messages, so AUTO falls back to reliable system input.
+        if mode in ("auto", "background"):
+            if action.kind == "deal":
+                ctl.click_normalized(
+                    self.config.stock_x,
+                    self.config.stock_y,
+                    mode="background",
+                )
+            else:
+                assert start is not None and end is not None
+                ctl.virtual_drag(start, end, duration_ms=460, steps=30)
+
+            time.sleep(self.config.action_delay)
+            after = ctl.capture()
+            diff = frame_difference(before, after)
+            if diff >= 0.0015:
+                return True, diff, after, "background"
+            if mode == "background":
+                return False, diff, after, "background"
+
+        # Reliable fallback. The cursor is restored immediately after the
+        # action, so the agent does not leave the user's mouse displaced.
+        if action.kind == "deal":
+            x, y = ctl.normalized_to_client(self.config.stock_x, self.config.stock_y)
+            ctl.system_click(x, y)
+        else:
+            assert start is not None and end is not None
+            ctl.system_drag(start, end, duration_ms=560, steps=34)
 
         time.sleep(self.config.action_delay)
         after = ctl.capture()
         diff = frame_difference(before, after)
-
-        # Background mouse messages occasionally get dropped. Retry a drag once,
-        # still without touching the physical cursor.
-        if diff < 0.0015 and action.kind == "move":
-            start = self._source_point(state, action)
-            end = self._destination_point(state, action)
-            ctl.virtual_drag(start, end, duration_ms=650, steps=36)
-            time.sleep(self.config.action_delay)
-            after = ctl.capture()
-            diff = frame_difference(before, after)
-
-        return diff >= 0.0015, diff, after
+        return diff >= 0.0015, diff, after, "system"
 
     def step(self) -> dict[str, Any]:
         self.last_error = None
@@ -203,9 +244,11 @@ class SpiderAgent:
             for action in actions:
                 self.learning.enrich(self.config.model, sig, action)
 
-        # If recognition found no legal tableau move but stock is present, make
-        # dealing available even if the stock-color detector was imperfect.
-        if not actions and state.stock_available:
+        # The purple-stock color detector is only a hint. The user explicitly
+        # calibrates the stock position, and a Spider deal contains at most five
+        # stock clicks. If no tableau move exists, probe the calibrated stock
+        # point even when vision says "no stock". This prevents false stops.
+        if not actions and self.stock_deals_used < 5 and self.stock_failed_clicks < 2:
             actions = [
                 SpiderAction(
                     id="deal0",
@@ -213,15 +256,21 @@ class SpiderAgent:
                     immediate_score=10.0,
                     lookahead_score=10.0,
                     principal_variation=["STOCK"],
-                    features={"deal": 1.0},
+                    features={
+                        "deal": 1.0,
+                        "vision_stock_detected": 1.0 if state.stock_available else 0.0,
+                        "calibrated_stock_probe": 1.0,
+                    },
                 )
             ]
 
         if self._is_stuck(state, actions):
-            self._finish_learning(False)
-            self.game_finished = True
-            self.game_won = False
-            raise SpiderAgentError("Keine legalen Züge und kein Stock mehr erkannt.")
+            raise SpiderAgentError(
+                "Keine legalen Tableau-Züge erkannt. Der Stock wurde ebenfalls "
+                "mehrfach erfolglos angeklickt oder bereits fünfmal benutzt. "
+                "Das ist wahrscheinlich ein Erkennungs-/Kalibrierungsproblem, "
+                "nicht automatisch eine verlorene Partie."
+            )
 
         if not actions:
             raise SpiderAgentError("Keine Aktion aus der erkannten Stellung erzeugt.")
@@ -236,7 +285,15 @@ class SpiderAgent:
         except spider_models.SpiderModelError as exc:
             raise SpiderAgentError(str(exc)) from exc
 
-        changed, diff, after = self._execute(state, selected, before)
+        changed, diff, after, input_used = self._execute(state, selected, before)
+
+        if selected.kind == "deal":
+            if changed:
+                self.stock_deals_used += 1
+                self.stock_failed_clicks = 0
+            else:
+                self.stock_failed_clicks += 1
+
         if not changed:
             self.failed_actions.setdefault(sig, set()).add(selected.notation())
             self.last_action = {
@@ -244,6 +301,9 @@ class SpiderAgent:
                 "action": selected.to_dict(),
                 "accepted": False,
                 "screen_difference": round(diff, 6),
+                "input_used": input_used,
+                "stock_deals_used": self.stock_deals_used,
+                "stock_failed_clicks": self.stock_failed_clicks,
                 "model_debug": model_debug,
                 "warning": (
                     "Das Spielbild hat sich nach der Aktion nicht geändert. "
@@ -270,6 +330,9 @@ class SpiderAgent:
             "action": selected.to_dict(),
             "accepted": True,
             "screen_difference": round(diff, 6),
+            "input_used": input_used,
+            "stock_deals_used": self.stock_deals_used,
+            "stock_failed_clicks": self.stock_failed_clicks,
             "model_debug": model_debug,
         }
 
@@ -312,6 +375,9 @@ class SpiderAgent:
                 "stock_y": round(self.config.stock_y, 4),
                 "learning": self.config.learning,
                 "action_delay": self.config.action_delay,
+                "input_mode": self.config.input_mode,
+                "stock_deals_used": self.stock_deals_used,
+                "stock_failed_clicks": self.stock_failed_clicks,
             },
             "window": info,
             "moves": self.moves,
