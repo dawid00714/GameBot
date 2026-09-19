@@ -162,9 +162,13 @@ class SpiderAgent:
                 # UI Automation is authoritative and already gives exact card
                 # geometry. Do not waste 20-40 seconds asking a VLM to reread it.
                 # FastOCR also skips Ollama when it has a clearly usable board.
-                vision_needed = not (
-                    state.reader == "uia"
-                    or (visible_cards >= 8 and occupied_cols >= 7)
+                impossible_cols = [
+                    c.index + 1
+                    for c in state.columns
+                    if c.hidden_above and not c.cards
+                ]
+                vision_needed = bool(impossible_cols) or not (
+                    occupied_cols >= 7 and visible_cards >= occupied_cols
                 )
 
                 if not vision_needed:
@@ -232,7 +236,12 @@ class SpiderAgent:
 
         visible = sum(len(c.cards) for c in state.columns)
         occupied = sum(1 for c in state.columns if c.cards)
-        if state.reader == "uia" or (visible >= 8 and occupied >= 7):
+        impossible_cols = [
+            c.index + 1
+            for c in state.columns
+            if c.hidden_above and not c.cards
+        ]
+        if not impossible_cols and occupied >= 7 and visible >= occupied:
             return state
 
         try:
@@ -252,6 +261,19 @@ class SpiderAgent:
     def _healthy_state(self, state: SpiderState) -> bool:
         visible = sum(len(c.cards) for c in state.columns)
         hidden_cols = sum(1 for c in state.columns if c.hidden_above)
+        impossible = [
+            c.index + 1
+            for c in state.columns
+            if c.hidden_above and not c.cards
+        ]
+        if impossible:
+            state.diagnostics.append(
+                "UNVOLLSTÄNDIGE STELLUNG: verdeckte Karten sichtbar, aber keine "
+                "offene Karte erkannt in Spalte(n) "
+                + ", ".join(map(str, impossible))
+                + ". Keine Aktion erlaubt."
+            )
+            return False
         return visible >= 5 or hidden_cols >= 5
 
     def _is_win(self, state: SpiderState) -> bool:
