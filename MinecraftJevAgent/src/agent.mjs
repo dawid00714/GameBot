@@ -158,10 +158,25 @@ async function onUserChat(username, message) {
     }
 
     userDirective = createHouseDirective(username, player.position);
+
+    const currentState = observe(bot, {plan, recent, step, userDirective});
+    const wantsWood = /\b(holz|wood|planken|planks)\b/.test(lower);
+    userDirective.requestedMaterial = wantsWood ? 'wood' : 'auto';
+    userDirective.material = chooseHouseMaterial(
+      currentState,
+      getHouseStatus(bot, userDirective).remaining,
+      userDirective.requestedMaterial
+    );
+
     lastBuiltHouse = {...userDirective};
     pausedByUser = false;
     replanRequested = true;
-    sayStatus('Okay. Ich baue hier ein kleines 5x5-Haus. Falls Material fehlt, sammle ich zuerst Dirt.', true);
+    sayStatus(
+      userDirective.requestedMaterial === 'wood'
+        ? 'Okay. Ich baue hier ein kleines 5x5-Haus aus ' + userDirective.material + '.'
+        : 'Okay. Ich baue hier ein kleines 5x5-Haus. Falls Material fehlt, sammle ich zuerst Dirt.',
+      true
+    );
     return;
   }
 
@@ -384,7 +399,11 @@ async function refreshPlan() {
     }
 
     if (!userDirective.material) {
-      userDirective.material = chooseHouseMaterial(plannerState, house.remaining);
+      userDirective.material = chooseHouseMaterial(
+        plannerState,
+        house.remaining,
+        userDirective.requestedMaterial || 'auto'
+      );
     }
 
     const material = userDirective.material;
