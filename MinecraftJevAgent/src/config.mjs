@@ -38,5 +38,16 @@ export const config = {
   },
   plannerEvery: int('PLANNER_EVERY_N_ACTIONS', 12),
   actionTimeoutMs: int('ACTION_TIMEOUT_MS', 20000),
-  logDir: process.env.LOG_DIR || './runs'
+  logDir: process.env.LOG_DIR || './runs',
+  dreamRsi: {
+    enabled: bool('DREAM_RSI_ENABLED', true),
+    dir: process.env.DREAM_RSI_DIR || './dream-rsi',
+    dreamEvery: int('DREAM_RSI_DREAM_EVERY', 40),
+    minHistory: int('DREAM_RSI_MIN_HISTORY', 25),
+    maxHistory: int('DREAM_RSI_MAX_HISTORY', 5000),
+    proposals: int('DREAM_RSI_PROPOSALS', 4),
+    minImprovement: Number.isFinite(Number(process.env.DREAM_RSI_MIN_IMPROVEMENT))
+      ? Number(process.env.DREAM_RSI_MIN_IMPROVEMENT)
+      : 0.03
+  }
 };
