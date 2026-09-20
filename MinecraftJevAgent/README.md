@@ -274,3 +274,52 @@ OLLAMA_TIMEOUT_MS=60000
 ```
 
 Für Echtzeit-Minecraft ist `OLLAMA_THINK=false` normalerweise die sinnvollere Einstellung.
+
+
+## Architektur v0.4: Ollama + TypeSafe auf zwei Ebenen
+
+Der Agent verwendet jetzt TypeSafe/JEV nicht nur fuer einzelne Aktionen, sondern auch fuer die Auswahl des High-Level-Plans:
+
+```
+Minecraft-Zustand
+      |
+      v
+Ollama erzeugt 3 unterschiedliche Plan-Kandidaten
+      |
+      v
+Code prueft Targets + erzeugt pro Plan die aktuell verfuegbaren Aktionen
+      |
+      v
+TypeSafe/JEV PLAN CHOICE
+      |
+      v
+gewaehlter High-Level-Plan
+      |
+      v
+Action Generator
+      |
+      v
+TypeSafe/JEV ACTION CHOICE
+      |
+      v
+Mineflayer fuehrt genau eine begrenzte Aktion aus
+      |
+      v
+neuer Minecraft-Zustand
+```
+
+Im Terminal erscheinen deshalb nun zwei getrennte JEV-Entscheidungen:
+
+```
+[OLLAMA] PLAN-KANDIDATEN:
+...
+[JEV] Waehle High-Level-Plan aus 3 Kandidaten...
+[JEV] PLAN GEWAEHLT: p1
+...
+[JEV] Waehle Aktion aus 7 Aktionen...
+STEP 0 | ...
+```
+
+Vor der Plan-Auswahl werden bereits erreichte numerische Targets entfernt. JEV bekommt fuer jeden Plan zusaetzlich die aktuell wirklich verfuegbaren Aktionen und kann dadurch einen Plan bevorzugen, der im aktuellen Zustand konkret ausfuehrbar ist.
+
+Die alte einzelne Planner-Funktion bleibt fuer den Ollama-Benchmark erhalten; der laufende Minecraft-Agent benutzt die neue 3-Kandidaten-Planung.
