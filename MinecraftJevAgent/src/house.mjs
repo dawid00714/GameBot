@@ -73,23 +73,36 @@ export function getHouseStatus(bot, directive) {
   };
 }
 
-export function chooseHouseMaterial(state, remainingCount) {
+export function chooseHouseMaterial(state, remainingCount, requested='auto') {
   const inventory = state?.inventory || {};
-  const preferred = [
-    'oak_planks',
-    'spruce_planks',
-    'birch_planks',
-    'jungle_planks',
-    'acacia_planks',
-    'dark_oak_planks',
-    'cobblestone'
+  const creative = String(state?.gameMode ?? '').toLowerCase().includes('creative')
+    || Number(state?.gameMode) === 1;
+
+  const wood = [
+    'oak_planks','spruce_planks','birch_planks','jungle_planks','acacia_planks','dark_oak_planks',
+    'mangrove_planks','cherry_planks','bamboo_planks','crimson_planks','warped_planks',
+    'oak_log','spruce_log','birch_log','jungle_log','acacia_log','dark_oak_log',
+    'mangrove_log','cherry_log'
   ];
 
-  // If we already own enough of a nicer material, use it. Otherwise choose
-  // dirt because the current agent can reliably gather it almost anywhere.
+  const preferred = requested === 'wood'
+    ? wood
+    : [...wood, 'cobblestone'];
+
+  // Creative mode does not consume the held building block, so a single block
+  // in the bot's inventory/hotbar is enough for the whole house.
   for (const name of preferred) {
-    if (Number(inventory[name] || 0) >= remainingCount) return name;
+    const have = Number(inventory[name] || 0);
+    if (creative ? have > 0 : have >= remainingCount) return name;
   }
+
+  // If wood was explicitly requested and some wood exists in Survival, keep
+  // that choice rather than silently switching to dirt.
+  if (requested === 'wood') {
+    const partial = wood.find(name => Number(inventory[name] || 0) > 0);
+    if (partial) return partial;
+  }
+
   return 'dirt';
 }
 
