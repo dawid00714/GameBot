@@ -323,3 +323,40 @@ STEP 0 | ...
 Vor der Plan-Auswahl werden bereits erreichte numerische Targets entfernt. JEV bekommt fuer jeden Plan zusaetzlich die aktuell wirklich verfuegbaren Aktionen und kann dadurch einen Plan bevorzugen, der im aktuellen Zustand konkret ausfuehrbar ist.
 
 Die alte einzelne Planner-Funktion bleibt fuer den Ollama-Benchmark erhalten; der laufende Minecraft-Agent benutzt die neue 3-Kandidaten-Planung.
+
+
+## Minecraft 26.2 Protocol-Fix
+
+Der verwendete Complexity-Minecraft-Data-Stack hat in seiner 26.2-Serverbound-Paketliste einen bekannten lokalen Mapping-Fehler: ab den Spectator-/Use-Item-Paketen waren IDs verschoben. Dadurch konnte ein normales `block_place`-Paket vom Vanilla-26.2-Server als `test_instance_block_action` interpretiert werden. Das fuehrte zu Kicks wie:
+
+```
+DecoderException
+serverbound/minecraft:test_instance_block_action
+extra whilst reading packet
+```
+
+Der Agent korrigiert diese IDs jetzt **vor dem Laden von Mineflayer und minecraft-protocol direkt im Speicher**:
+
+```
+0x3e spectator_action
+0x3f arm_animation
+0x40 spectate
+0x41 test_instance_block_action
+0x42 block_place
+0x43 use_item
+0x44 custom_click_action
+```
+
+Pruefung:
+
+```powershell
+npm run check:protocol
+```
+
+Beim normalen Start muss vor dem Minecraft-Connect stehen:
+
+```
+[PROTOCOL] Minecraft 26.2 serverbound packet map corrected in memory.
+```
+
+Ausserdem ist automatisches Pathfinder-Scaffolding/Pillaring deaktiviert. Blockplatzierung erfolgt damit nur ueber explizite Agent-Aktionen.
