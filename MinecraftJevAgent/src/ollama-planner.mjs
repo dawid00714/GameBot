@@ -50,8 +50,11 @@ Rules:
 - If gameMode is Creative, do NOT set inventory collection targets for mined blocks; breaking blocks in Creative does not provide ordinary Survival drops.
 - Never request "build a structure", house, tower, shelter, bridge or arbitrary construction: the current agent does not yet have general block-placement actions.
 - Do not keep collecting a resource after the numeric target is already satisfied.
+- Inventory counts in state are authoritative. If inventory already meets a target, choose a DIFFERENT objective.
+- If a visible player appears in nearbyPlayers, you may choose an objective to approach/follow that player without providing a waypoint.
 
 CURRENT AGENT CAPABILITIES:
+- approach/follow a visible player from nearbyPlayers
 - travel toward a trusted planner waypoint
 - explore a short distance north/east/south/west when no waypoint is known
 - mine one observed desired resource block in Survival
