@@ -39,6 +39,19 @@ let step = 0;
 let plan = null;
 let recent = [];
 
+function numericTargetsSatisfied(currentState, currentPlan) {
+  const entries = Object.entries(currentPlan?.targets || {})
+    .filter(([, raw]) => Number.isFinite(Number(raw)));
+  if (!entries.length) return false;
+  return entries.every(([name, raw]) => Number(currentState.inventory?.[name] || 0) >= Number(raw));
+}
+
+function repeatedSameAction(rows, count=5) {
+  if (rows.length < count) return false;
+  const tail = rows.slice(-count).map(r => r.action);
+  return tail.every(a => a === tail[0]);
+}
+
 bot.on('error', error => {
   console.error('Minecraft connection error:', error);
   log('minecraft_error', {error: error.message, code: error.code, errno: error.errno, syscall: error.syscall});
@@ -101,7 +114,24 @@ async function main() {
       }
     }
 
-    const state = observe(bot, {plan, recent, step});
+    let state = observe(bot, {plan, recent, step});
+
+    if (numericTargetsSatisfied(state, plan)) {
+      console.log('[OLLAMA] Planner targets erreicht. Plane sofort neu...');
+      await refreshPlan();
+      state = observe(bot, {plan, recent, step});
+    }
+
+    if (repeatedSameAction(recent, 5)) {
+      console.log('[OLLAMA] Gleiche Aktion 5x hintereinander. Erzwinge Neuplanung...');
+      try {
+        await refreshPlan();
+        state = observe(bot, {plan, recent, step});
+      } catch (error) {
+        console.error('[OLLAMA] Neuplanung fehlgeschlagen:', error.message);
+      }
+    }
+
     const candidates = buildCandidates(bot, state, plan);
 
     let decision;
