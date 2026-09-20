@@ -1,6 +1,6 @@
 {
   "name": "minecraft-jev-ollama-agent",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -11,7 +11,8 @@
     "check:minecraft": "node src/check-minecraft.mjs",
     "check:jev": "node src/check-jev.mjs",
     "benchmark:ollama": "node src/benchmark-ollama.mjs",
-    "check:protocol": "node src/check-protocol.mjs"
+    "check:protocol": "node src/check-protocol.mjs",
+    "dream:status": "node src/dream-rsi-status.mjs"
   },
   "dependencies": {
     "dotenv": "^16.4.7",
