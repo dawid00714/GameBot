@@ -72,6 +72,7 @@ def _analyze_locked() -> dict[str, Any]:
         "window": window_info(hwnd).to_dict(),
         "board": board.to_dict(),
         "templates": vision.templates.summary(),
+        "typesafe": typesafe_status(),
     }
 
 
