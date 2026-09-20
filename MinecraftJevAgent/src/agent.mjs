@@ -58,6 +58,7 @@ bot.on('death', () => {
 
 async function refreshPlan() {
   const plannerState = observe(bot, {plan, recent, step});
+  console.log(`\n[OLLAMA] Frage Planer ${config.ollama.model}...`);
   log('planner_request', {model: config.ollama.model, state: plannerState});
   const next = await makePlan(plannerState);
   plan = next;
@@ -66,7 +67,9 @@ async function refreshPlan() {
 }
 
 async function main() {
+  console.log('[MINECRAFT] Bot ist gespawnt. Warte auf Chunks...');
   await bot.waitForChunksToLoad();
+  console.log('[MINECRAFT] Chunks geladen.');
 
   const movements = new Movements(bot);
   movements.allowParkour = false;
@@ -80,6 +83,8 @@ async function main() {
   });
 
   await refreshPlan();
+
+  let consecutiveJevErrors = 0;
 
   while (!stopped) {
     if (fs.existsSync(path.join(runDir, 'stop'))) {
@@ -101,10 +106,16 @@ async function main() {
 
     let decision;
     try {
+      console.log(`[JEV] Frage ${config.jev.model} mit ${candidates.length} Aktionen...`);
       decision = await chooseAction(state, candidates);
+      consecutiveJevErrors = 0;
     } catch (error) {
-      log('jev_error', {error: error.message});
-      throw error;
+      consecutiveJevErrors += 1;
+      log('jev_error', {error: error.message, consecutive: consecutiveJevErrors});
+      console.error('[JEV] Fehler:', error.message);
+      console.error('[JEV] Bot bleibt verbunden. Neuer Versuch in 10 Sekunden. Bei Konfigurationsaenderungen npm start neu starten.');
+      await new Promise(resolve => setTimeout(resolve, 10000));
+      continue;
     }
 
     console.log(
@@ -150,6 +161,7 @@ async function main() {
 }
 
 bot.once('spawn', () => {
+  console.log(`[MINECRAFT] Verbunden mit ${config.minecraft.host}:${config.minecraft.port} als ${config.minecraft.username} (${config.minecraft.version})`);
   main().catch(error => {
     console.error(error);
     log('fatal', {error: error.stack || error.message});
