@@ -437,3 +437,24 @@ Vanilla Minecraft hat fuer normale Spieler keine echte grafische Sprechblase ueb
 ```
 
 Eine echte schwebende Textblase ueber dem Bot wuerde ein Client-Mod, Server-Plugin oder OP-Kommandos/Text-Display-Entities benoetigen.
+
+
+## Follow-Verhalten v0.5.1
+
+Sichtbare Spieler sind im autonomen Modus nur Beobachtungen. Der Agent darf ihnen **nicht selbststaendig folgen**.
+
+Nur ausdrueckliche Chat-Befehle aktivieren Spieler-Navigation:
+
+```
+folge mir
+```
+
+bleibt aktiv, bis `stopp` oder `autonom` gesendet wird.
+
+```
+komm her
+```
+
+ist dagegen einmalig: Der Bot kommt bis auf ca. 2.5 Bloecke heran, meldet `Ich bin da.` und kehrt danach in den autonomen Modus zurueck.
+
+Der autonome Fallback ist jetzt Exploration statt Spieler-Verfolgung.
