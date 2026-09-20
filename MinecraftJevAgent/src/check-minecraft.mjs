@@ -1,4 +1,4 @@
-import mineflayer from 'mineflayer';
+import { mineflayer } from './minecraft-runtime.mjs';
 import { config } from './config.mjs';
 
 console.log('Teste Minecraft-Verbindung mit:');
