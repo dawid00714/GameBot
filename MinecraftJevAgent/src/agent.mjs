@@ -52,6 +52,29 @@ function repeatedSameAction(rows, count=5) {
   return tail.every(a => a === tail[0]);
 }
 
+function sanitizePlanAgainstState(nextPlan, currentState) {
+  const completed = [];
+  const remainingTargets = {};
+
+  for (const [name, raw] of Object.entries(nextPlan?.targets || {})) {
+    const minimum = Number(raw);
+    if (Number.isFinite(minimum) && Number(currentState.inventory?.[name] || 0) >= minimum) {
+      completed.push({name, have:Number(currentState.inventory?.[name] || 0), target:minimum});
+    } else {
+      remainingTargets[name] = raw;
+    }
+  }
+
+  const completedNames = new Set(completed.map(x => x.name));
+  const sanitized = {
+    ...nextPlan,
+    targets: remainingTargets,
+    desiredBlocks: (nextPlan?.desiredBlocks || []).filter(name => !completedNames.has(name))
+  };
+
+  return {plan:sanitized, completed};
+}
+
 bot.on('error', error => {
   console.error('Minecraft connection error:', error);
   log('minecraft_error', {error: error.message, code: error.code, errno: error.errno, syscall: error.syscall});
@@ -74,7 +97,12 @@ async function refreshPlan() {
   console.log(`\n[OLLAMA] Frage Planer ${config.ollama.model}...`);
   log('planner_request', {model: config.ollama.model, state: plannerState});
   const next = await makePlan(plannerState);
-  plan = next;
+  const checked = sanitizePlanAgainstState(next, plannerState);
+  plan = checked.plan;
+  if (checked.completed.length) {
+    console.log('[PLAN-GUARD] Bereits erreichte Targets entfernt:', checked.completed);
+    log('planner_targets_removed', {completed:checked.completed, original:next, sanitized:plan});
+  }
   log('planner_response', {plan});
   console.log('\nPLAN:', JSON.stringify(plan, null, 2));
 }
