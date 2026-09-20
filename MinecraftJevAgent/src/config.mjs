@@ -5,12 +5,18 @@ const int = (name, fallback) => {
   return Number.isFinite(value) ? value : fallback;
 };
 
+const auth = (process.env.MC_AUTH || 'offline').toLowerCase();
+if (!['offline', 'microsoft'].includes(auth)) {
+  throw new Error('MC_AUTH must be "offline" or "microsoft".');
+}
+
 export const config = {
   minecraft: {
     host: process.env.MC_HOST || '127.0.0.1',
     port: int('MC_PORT', 25565),
     username: process.env.MC_USERNAME || 'JevOllama',
-    version: process.env.MC_VERSION || '1.16.5'
+    version: process.env.MC_VERSION || '26.2',
+    auth
   },
   ollama: {
     url: (process.env.OLLAMA_URL || 'http://127.0.0.1:11434').replace(/\/$/, ''),
