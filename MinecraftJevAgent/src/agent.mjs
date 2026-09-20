@@ -6,6 +6,7 @@ import { makePlanCandidates } from './ollama-planner.mjs';
 import { choosePlan, chooseAction } from './jev-controller.mjs';
 import { observe } from './state.mjs';
 import { buildCandidates } from './actions.mjs';
+import { createHouseDirective, getHouseStatus, chooseHouseMaterial } from './house.mjs';
 
 const { pathfinder, Movements } = pf;
 
@@ -37,6 +38,107 @@ let stopped = false;
 let step = 0;
 let plan = null;
 let recent = [];
+let userDirective = null;
+let pausedByUser = false;
+let replanRequested = false;
+let lastSpokenPlan = '';
+let lastStatusAt = 0;
+
+function sayStatus(text, force=false) {
+  const now = Date.now();
+  if (!force && now - lastStatusAt < 1500) return;
+  lastStatusAt = now;
+  try {
+    bot.chat('[JevOllama] ' + String(text).slice(0, 220));
+  } catch {}
+}
+
+function directiveSummary() {
+  if (!userDirective) return 'Autonomer Modus.';
+  if (userDirective.type === 'follow_player') return 'Ich folge ' + userDirective.username + '.';
+  if (userDirective.type === 'build_house') return 'Ich baue ein 5x5-Haus fuer ' + userDirective.requestedBy + '.';
+  return 'Aktive Aufgabe: ' + userDirective.type;
+}
+
+function normalizeChatCommand(message) {
+  return String(message || '')
+    .trim()
+    .replace(/^!?(?:bot|jev|jevollama)[,:]?\s*/i, '')
+    .trim();
+}
+
+function matches(text, expressions) {
+  return expressions.some(re => re.test(text));
+}
+
+function onUserChat(username, message) {
+  if (!username || username === bot.username) return;
+  const command = normalizeChatCommand(message);
+  const lower = command.toLowerCase();
+
+  if (matches(lower, [/^(hilfe|help|befehle)$/])) {
+    sayStatus('Befehle: "folge mir", "baue hier ein haus", "stopp", "weiter", "autonom", "status".', true);
+    return;
+  }
+
+  if (matches(lower, [/^(status|was machst du\??|was tust du\??)$/])) {
+    const objective = plan?.objective ? ' Plan: ' + plan.objective : '';
+    sayStatus(directiveSummary() + objective, true);
+    return;
+  }
+
+  if (matches(lower, [/^(stopp|stop|pause|warte)$/])) {
+    pausedByUser = true;
+    try { bot.pathfinder.setGoal(null); } catch {}
+    try { bot.clearControlStates(); } catch {}
+    sayStatus('Okay, ich stoppe und warte.', true);
+    return;
+  }
+
+  if (matches(lower, [/^(weiter|resume|mach weiter)$/])) {
+    pausedByUser = false;
+    replanRequested = true;
+    sayStatus('Okay, ich mache weiter.', true);
+    return;
+  }
+
+  if (matches(lower, [/^(autonom|autonomer modus|mach selbst|entscheide selbst)$/])) {
+    userDirective = null;
+    pausedByUser = false;
+    replanRequested = true;
+    sayStatus('Autonomer Modus aktiviert.', true);
+    return;
+  }
+
+  if (matches(lower, [/^(folge mir|follow me|komm her|come here)$/])) {
+    userDirective = {
+      type: 'follow_player',
+      username,
+      requestedBy: username,
+      createdAt: Date.now()
+    };
+    pausedByUser = false;
+    replanRequested = true;
+    sayStatus('Okay, ich folge dir.', true);
+    return;
+  }
+
+  if (matches(lower, [/(baue|bau).*\bhaus\b/, /build.*\bhouse\b/])) {
+    const player = bot.players?.[username]?.entity;
+    if (!player?.position) {
+      sayStatus('Ich sehe dich gerade nicht. Komm bitte in meine Sichtweite und versuche es erneut.', true);
+      return;
+    }
+
+    userDirective = createHouseDirective(username, player.position);
+    pausedByUser = false;
+    replanRequested = true;
+    sayStatus('Okay. Ich baue hier ein kleines 5x5-Haus. Falls Material fehlt, sammle ich zuerst Dirt.', true);
+    return;
+  }
+}
+
+bot.on('chat', onUserChat);
 
 function numericTargetsSatisfied(currentState, currentPlan) {
   const entries = Object.entries(currentPlan?.targets || {})
@@ -82,6 +184,10 @@ function actionAdvancesPlan(actionKey, currentPlan) {
   const resources = [...new Set([...targets, ...desired])];
 
   if (key === 'wait') return false;
+
+  if (key === 'build_house_step') {
+    return /\b(build|house|haus|building)\b/.test(objective);
+  }
 
   if (key.startsWith('mine_')) {
     return resources.some(name => key.startsWith('mine_' + name + '_'));
@@ -177,7 +283,78 @@ bot.on('death', () => {
 });
 
 async function refreshPlan() {
-  const plannerState = observe(bot, {plan, recent, step});
+  const plannerState = observe(bot, {plan, recent, step, userDirective});
+
+  if (userDirective?.type === 'follow_player') {
+    plan = {
+      id: 'user-follow',
+      objective: 'Follow the visible player ' + userDirective.username,
+      targets: {},
+      waypoint: null,
+      desiredBlocks: [],
+      notes: 'Explicit user command. Stay near the requested player.'
+    };
+    console.log('\n[USER TASK] Follow player:', userDirective.username);
+    if (lastSpokenPlan !== plan.objective) {
+      lastSpokenPlan = plan.objective;
+      sayStatus('Plan: ' + plan.objective, true);
+    }
+    return;
+  }
+
+  if (userDirective?.type === 'build_house') {
+    const house = getHouseStatus(bot, userDirective);
+    if (house.completed) {
+      sayStatus('Haus fertig. Aufgabe abgeschlossen.', true);
+      userDirective = null;
+      replanRequested = true;
+      return refreshPlan();
+    }
+
+    if (!userDirective.material) {
+      userDirective.material = chooseHouseMaterial(plannerState, house.remaining);
+    }
+
+    const material = userDirective.material;
+    const have = Number(plannerState.inventory?.[material] || 0);
+
+    if (have < house.remaining) {
+      plan = {
+        id: 'user-house-gather',
+        objective: 'Gather ' + material + ' for the requested house',
+        targets: {[material]: house.remaining},
+        waypoint: null,
+        desiredBlocks: [material],
+        notes: 'Explicit user task. Gather enough building material before construction.'
+      };
+    } else {
+      plan = {
+        id: 'user-house-build',
+        objective: 'Build the requested house here using ' + material,
+        targets: {},
+        waypoint: null,
+        desiredBlocks: [],
+        notes: 'Explicit user task. Use build_house_step until the blueprint is complete.'
+      };
+    }
+
+    console.log('\n[USER TASK] House:', JSON.stringify({
+      material,
+      inventory: have,
+      placed: house.placed,
+      remaining: house.remaining,
+      total: house.total,
+      plan
+    }, null, 2));
+
+    const spoken = plan.objective;
+    if (lastSpokenPlan !== spoken) {
+      lastSpokenPlan = spoken;
+      sayStatus('Plan: ' + spoken, true);
+    }
+    return;
+  }
+
   console.log(`\n[OLLAMA] Erzeuge 3 Plan-Kandidaten mit ${config.ollama.model}...`);
   log('planner_candidates_request', {model: config.ollama.model, state: plannerState});
 
@@ -261,6 +438,11 @@ async function refreshPlan() {
 
   plan = planDecision.candidate.plan;
 
+  if (lastSpokenPlan !== plan.objective) {
+    lastSpokenPlan = plan.objective;
+    sayStatus('Plan: ' + plan.objective, true);
+  }
+
   if (planDecision.candidate.completed.length) {
     console.log('[PLAN-GUARD] Bereits erreichte Targets entfernt:', planDecision.candidate.completed);
   }
@@ -306,12 +488,28 @@ async function main() {
 
   await refreshPlan();
 
+  sayStatus('Ich bin bereit. Schreib im Chat "hilfe" fuer Befehle.', true);
+
   let consecutiveJevErrors = 0;
 
   while (!stopped) {
     if (fs.existsSync(path.join(runDir, 'stop'))) {
       log('stop_file', {});
       break;
+    }
+
+    if (pausedByUser) {
+      await bot.waitForTicks(10);
+      continue;
+    }
+
+    if (replanRequested) {
+      replanRequested = false;
+      try {
+        await refreshPlan();
+      } catch (error) {
+        console.error('[PLAN] Benutzer-Neuplanung fehlgeschlagen:', error.message);
+      }
     }
 
     if (step > 0 && step % config.plannerEvery === 0) {
@@ -323,23 +521,23 @@ async function main() {
       }
     }
 
-    let state = observe(bot, {plan, recent, step});
+    let state = observe(bot, {plan, recent, step, userDirective});
 
     if (numericTargetsSatisfied(state, plan)) {
       console.log('[PLAN] Aktuelle numerische Targets erreicht. Neue 3-Wege-Planung...');
       try {
         await refreshPlan();
-        state = observe(bot, {plan, recent, step});
+        state = observe(bot, {plan, recent, step, userDirective});
       } catch (error) {
         console.error('[PLAN] Neuplanung fehlgeschlagen:', error.message);
       }
     }
 
-    if (repeatedSameAction(recent, 5)) {
+    if (repeatedSameAction(recent, 5) && userDirective?.type !== 'follow_player') {
       console.log('[PLAN] Gleiche Aktion 5x hintereinander. Neue 3-Wege-Planung...');
       try {
         await refreshPlan();
-        state = observe(bot, {plan, recent, step});
+        state = observe(bot, {plan, recent, step, userDirective});
       } catch (error) {
         console.error('[PLAN] Neuplanung fehlgeschlagen:', error.message);
       }
@@ -410,6 +608,17 @@ async function main() {
     recent = recent.slice(-12);
     log('result', row);
     console.log('RESULT:', result);
+
+    if (userDirective?.type === 'build_house') {
+      const house = getHouseStatus(bot, userDirective);
+      if (house.completed) {
+        sayStatus('Haus fertig: ' + house.total + '/' + house.total + ' Bloecke.', true);
+        userDirective = null;
+        replanRequested = true;
+      } else if (decision.candidate.key === 'build_house_step' && (house.placed % 5 === 0 || house.remaining < 5)) {
+        sayStatus('Hausbau: ' + house.placed + '/' + house.total + ' Bloecke.');
+      }
+    }
   }
 
   log('stopped', {step});
