@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import mineflayer from 'mineflayer';
-import pf from 'mineflayer-pathfinder';
+import { mineflayer, pf } from './minecraft-runtime.mjs';
 import { config } from './config.mjs';
 import { makePlanCandidates } from './ollama-planner.mjs';
 import { choosePlan, chooseAction } from './jev-controller.mjs';
@@ -185,6 +184,13 @@ async function main() {
   const movements = new Movements(bot);
   movements.allowParkour = false;
   movements.maxDropDown = 3;
+
+  // Do not let the generic pathfinder place scaffolding/towers automatically.
+  // The agent has explicit placement actions, and this also keeps navigation
+  // deterministic on the newer 26.2 protocol.
+  movements.allow1by1towers = false;
+  movements.scafoldingBlocks = [];
+
   bot.pathfinder.setMovements(movements);
 
   log('start', {
