@@ -1,7 +1,7 @@
 import { Vec3 } from 'vec3';
 import { pf } from './minecraft-runtime.mjs';
 import { config } from './config.mjs';
-import { getHouseStatus } from './house.mjs';
+import { getHouseStatus, houseDoorInfo } from './house.mjs';
 
 const { goals } = pf;
 
@@ -112,6 +112,67 @@ async function placeAt(bot, target, itemName) {
   throw new Error('No attachable neighbor for house block at ' + target + '.');
 }
 
+
+function isAirLike(block) {
+  return !block || ['air','cave_air','void_air'].includes(block.name);
+}
+
+function isDoorBlock(block) {
+  return Boolean(block?.name && block.name.endsWith('_door') && !block.name.endsWith('_trapdoor'));
+}
+
+async function installHouseDoor(bot, directive) {
+  const info = houseDoorInfo(directive);
+  if (!info) throw new Error('No remembered house doorway.');
+
+  const doorName = directive.doorItem;
+  if (!doorName) throw new Error('No door item selected.');
+
+  const item = bot.inventory.items().find(i => i.name === doorName);
+  if (!item) throw new Error('Door item disappeared from inventory: ' + doorName);
+
+  const lower = new Vec3(info.lower.x, info.lower.y, info.lower.z);
+  const upper = new Vec3(info.upper.x, info.upper.y, info.upper.z);
+
+  // Never break the house unless a usable door item is already confirmed.
+  for (const pos of [lower, upper]) {
+    const block = bot.blockAt(pos);
+    if (isDoorBlock(block)) return 'Door is already installed.';
+    if (!isAirLike(block)) {
+      if (bot.entity.position.distanceTo(pos) > 4.2) await goNear(bot, pos, 3);
+      await bounded(bot, bot.dig(block, true));
+      await bot.waitForTicks(3);
+    }
+  }
+
+  const floor = bot.blockAt(lower.offset(0, -1, 0));
+  if (!floor || floor.boundingBox !== 'block') {
+    throw new Error('Doorway has no solid floor block.');
+  }
+
+  if (bot.entity.position.distanceTo(lower) > 4.2) {
+    await goNear(bot, lower, 3);
+  }
+
+  await bot.equip(item, 'hand');
+
+  // Face roughly toward the doorway so the door gets a sensible orientation.
+  try {
+    await bot.lookAt(lower.offset(0.5, 1, 0.5), true);
+  } catch {}
+
+  await bounded(bot, bot.placeBlock(floor, new Vec3(0, 1, 0)));
+  await bot.waitForTicks(6);
+
+  const placedLower = bot.blockAt(lower);
+  const placedUpper = bot.blockAt(upper);
+  if (!isDoorBlock(placedLower) && !isDoorBlock(placedUpper)) {
+    throw new Error('Door placement did not create a door block.');
+  }
+
+  return 'Installed ' + doorName + ' in the remembered house doorway.';
+}
+
 async function placeCraftingTable(bot) {
   const table = bot.inventory.items().find(i => i.name === 'crafting_table');
   if (!table) throw new Error('No crafting table in inventory.');
@@ -154,6 +215,15 @@ async function lootChest(bot, pos) {
 export function buildCandidates(bot, state, plan) {
   const candidates = [];
   const add = (key, description, run) => candidates.push({key, description, run});
+
+  if (state.userDirective?.type === 'install_door') {
+    const directive = state.userDirective;
+    add(
+      'install_house_door',
+      `Install ${directive.doorItem} in the remembered house doorway. Do not modify any other wall blocks.`,
+      () => installHouseDoor(bot, directive)
+    );
+  }
 
   // Explicit user task: build a simple 5x5 starter house one block at a time.
   if (state.userDirective?.type === 'build_house') {
