@@ -25,7 +25,7 @@ Der aktuelle Stand ist ein **funktionierendes Grundgerüst/MVP**, nicht bereits 
 - Minecraft Java
 - lokaler Minecraft-Server, standardmäßig Java 1.16.5 auf `127.0.0.1:25565`
 - Ollama
-- JEV-Zugang/API-Key
+- TypeSafe/JEV-Zugang mit TypeSafe API-Key
 
 ## 1. Ollama vorbereiten
 
@@ -48,7 +48,7 @@ Jedes andere lokal installierte Ollama-Chatmodell kann über `.env` gewählt wer
 
 `.env.example` nach `.env` kopieren.
 
-Beispiel:
+Beispiel für die **native TypeSafe API**:
 
 ```env
 MC_HOST=127.0.0.1
@@ -59,13 +59,20 @@ MC_VERSION=1.16.5
 OLLAMA_URL=http://127.0.0.1:11434
 OLLAMA_MODEL=qwen3:8b
 
-JEV_BASE_URL=https://openrouter.ai
-JEV_PATH=/api/alpha/decisions
-JEV_MODEL=typesafe/jev-1.13
-JEV_API_KEY=DEIN_KEY
+JEV_BASE_URL=https://api.typesafe.ai
+JEV_PATH=/v1/systemone
+JEV_MODEL=jev-latest
+JEV_API_KEY=DEIN_TYPESAFE_KEY
 ```
 
-Keine API-Keys nach GitHub committen.
+Der Request geht damit an:
+
+```
+POST https://api.typesafe.ai/v1/systemone
+Authorization: Bearer <JEV_API_KEY>
+```
+
+Keine API-Keys nach GitHub committen oder in Screenshots veröffentlichen.
 
 ## 3. Start
 
