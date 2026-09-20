@@ -41,12 +41,26 @@ Return ONLY valid JSON with this exact shape:
 
 Rules:
 - Use only information present in the supplied state.
-- Keep the objective achievable with ordinary Survival gameplay.
+- Keep the objective achievable with the CURRENT agent capabilities listed below.
 - Prefer small, immediate milestones.
 - Item and block names should use Minecraft registry-style names such as oak_log, cobblestone, crafting_table.
 - If coordinates are unknown, waypoint must be null.
 - Do not claim that an unknown structure, chest, portal, mob or resource exists.
-- Survival and avoiding obvious hazards have priority over speed.`;
+- Survival and avoiding obvious hazards have priority over speed.
+- If gameMode is Creative, do NOT set inventory collection targets for mined blocks; breaking blocks in Creative does not provide ordinary Survival drops.
+- Never request "build a structure", house, tower, shelter, bridge or arbitrary construction: the current agent does not yet have general block-placement actions.
+- Do not keep collecting a resource after the numeric target is already satisfied.
+
+CURRENT AGENT CAPABILITIES:
+- travel toward a trusted planner waypoint
+- explore a short distance north/east/south/west when no waypoint is known
+- mine one observed desired resource block in Survival
+- collect nearby dropped items
+- open/loot observed chests and barrels
+- craft an item when a valid recipe is currently available
+- place a carried crafting table
+- wait briefly for new observations
+No general building, combat strategy, farming, smelting workflow, portal construction, or arbitrary block placement is available yet.`;
 
 export async function runPlanner(state, overrides={}) {
   const model = overrides.model || config.ollama.model;
