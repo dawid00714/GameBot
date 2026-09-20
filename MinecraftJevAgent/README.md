@@ -530,3 +530,91 @@ Fragen und Aussagen erzeugen keine Aufgabe:
 ```
 
 Ein lokaler Regex bleibt nur als Not-Stopp-Fallback fuer `stop/stopp/pause`, falls Ollama selbst nicht erreichbar ist.
+
+
+## Dream-RSI-inspirierte Selbstverbesserung v0.7.0
+
+**Wichtig:** Das offizielle Dream-RSI-Repository von Google/DeepMind veroeffentlicht Stand September 2026 noch nicht den vollstaendigen Code. Diese Integration ist deshalb eine eigene, Minecraft-spezifische Reimplementierung der veroeffentlichten Idee und nicht der Originalcode.
+
+Die Integration veraendert **nicht** die Gewichte von Ollama oder JEV. Sie verbessert die Meta-/Explorationsstrategie:
+
+```
+Minecraft online spielen
+        |
+        v
+Transitionen + Kandidaten + Resultate als History speichern
+        |
+        v
+History-Pool / Replay-Graph
+        |
+        v
+Ollama erzeugt konservative Policy-Varianten
+        |
+        v
+Offline-Replay ueber bereits beobachtete Outcomes
+        |
+        v
+Incumbent + Kandidaten vergleichen
+        |
+        v
+nur bei besserem Replay-Score Policy aktualisieren
+        |
+        v
+neue Policy steuert Kandidatenmenge, Replan-Intervall,
+Repeat-Schwelle und Action-Prioritaeten
+        |
+        v
+TypeSafe/JEV trifft weiterhin die konkrete Choice
+```
+
+Gespeichert wird unter:
+
+```
+dream-rsi/history.jsonl
+dream-rsi/policy.json
+dream-rsi/policy-history.jsonl
+```
+
+Jede Transition speichert u.a.:
+
+- Session-/Node-ID und Parent-ID
+- abstrahierten State-Fingerprint
+- aktuellen Plan
+- angebotene Actions
+- ausgewaehlte Action
+- reales Ergebnis
+- Reward
+- Next-State-Fingerprint
+
+Da eine laufende Minecraft-Welt nicht billig auf beliebige alte Snapshots verzweigt werden kann, ist der Replay-Simulator **konservativ**: Eine alternative Policy wird nur dort bewertet, wo fuer den entsprechenden abstrahierten Zustand und die ausgewaehlte Action bereits ein reales Outcome in der History existiert. Unbeobachtete Aeste werden nicht erfunden.
+
+Die aktuell deployte Policy bleibt immer Teil des Vergleichs. Eine neue Policy wird nur aktiviert, wenn ihr Replay-Score den Incumbent um mindestens `DREAM_RSI_MIN_IMPROVEMENT` uebertrifft und genug Replay-Coverage vorhanden ist.
+
+Konfiguration:
+
+```env
+DREAM_RSI_ENABLED=true
+DREAM_RSI_DIR=./dream-rsi
+DREAM_RSI_DREAM_EVERY=40
+DREAM_RSI_MIN_HISTORY=25
+DREAM_RSI_MAX_HISTORY=5000
+DREAM_RSI_PROPOSALS=4
+DREAM_RSI_MIN_IMPROVEMENT=0.03
+```
+
+Status anzeigen:
+
+```powershell
+npm run dream:status
+```
+
+Im normalen Log erscheinen Eintraege wie:
+
+```
+[DREAM-RSI] Record node=... action=explore_east reward=1.42 history=31
+[DREAM-RSI] Dreaming ueber 40 gespeicherte Transitionen...
+[DREAM-RSI] Replay-Rangliste:
+  [candidate] avoid-wait score=1.123 ...
+  [incumbent] baseline score=0.991 ...
+[DREAM-RSI] POLICY UPDATE -> generation=1 ...
+```
