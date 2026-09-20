@@ -51,7 +51,10 @@ export async function choosePlan(state, planCandidates) {
         `Notes: ${candidate.plan.notes || ''}`,
         `Already-completed targets removed: ${JSON.stringify(candidate.completed || [])}`,
         `Currently available actions for this plan: ${JSON.stringify(candidate.availableActions || [])}`,
-        `Useful non-wait actions: ${candidate.usefulActionCount ?? 0}`
+        `Plan feasible now: ${candidate.feasible !== false}`,
+        `Relevant actions that directly advance this plan: ${JSON.stringify(candidate.relevantActions || [])}`,
+        `Relevant action count: ${candidate.relevantActionCount ?? 0}`,
+        `All currently available actions: ${JSON.stringify(candidate.availableActions || [])}`
       ].join(' | ')
     ])
   );
@@ -59,7 +62,7 @@ export async function choosePlan(state, planCandidates) {
   const {answer, payload, body} = await askChoice(
     state,
     criteria,
-    'Choose exactly one high-level Minecraft plan. Prefer a plan that is useful now, not already completed, and has concrete executable non-wait actions in the current state. Reject redundancy implicitly by choosing a different candidate. Use inventory, health, nearby observations, visible players and recent results. Avoid a plan whose only meaningful action is waiting when another candidate can make progress.',
+    'Choose exactly one high-level Minecraft plan from the offered FEASIBLE candidates. The decisive signal is the list of relevant actions that directly advance each plan. Prefer a useful, not-already-completed plan with concrete relevant actions now. Use inventory, health, nearby observations, visible players and recent results. Do not prefer a plan merely because unrelated exploration actions exist.',
     'plan'
   );
 
