@@ -165,15 +165,31 @@ export function buildCandidates(bot, state, plan) {
     );
   }
 
-  const desired = new Set([
-    ...(plan?.desiredBlocks || []),
-    ...Object.keys(plan?.targets || {}).filter(name => name.endsWith('_log') || name.endsWith('_ore') || [
-      'stone','cobblestone','dirt','sand','gravel','obsidian'
-    ].includes(name))
-  ]);
+  const resourceLike = name => name.endsWith('_log') || name.endsWith('_ore') || [
+    'stone','cobblestone','dirt','sand','gravel','obsidian'
+  ].includes(name);
+
+  const targetStillNeeds = name => {
+    const raw = plan?.targets?.[name];
+    if (raw == null) return true;
+    const minimum = Number(raw);
+    if (!Number.isFinite(minimum)) return true;
+    return itemCount(state, name) < minimum;
+  };
+
+  const desired = new Set(
+    [...(plan?.desiredBlocks || []), ...Object.keys(plan?.targets || {})]
+      .filter(resourceLike)
+      .filter(targetStillNeeds)
+  );
+
+  const creativeMode = String(state.gameMode ?? '').toLowerCase().includes('creative')
+    || Number(state.gameMode) === 1;
 
   const mineable = (state.nearbyBlocks || [])
     .filter(block => desired.has(block.name))
+    // In Creative, breaking resource blocks does not satisfy inventory-count goals.
+    .filter(block => !(creativeMode && Number.isFinite(Number(plan?.targets?.[block.name]))))
     .slice(0, 8);
 
   for (const block of mineable) {
