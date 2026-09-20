@@ -10,7 +10,8 @@ Solitaire-Fenster
   -> OpenCV erkennt 10 feste Tableau-Spalten
   -> Kartenkoepfe / Rang-Ausschnitte werden aus Pixeln gefunden
   -> Template-Klassifikator erkennt A,2,...,10,J,Q,K
-  -> deterministische Spider-Regeln erzeugen legale Zuege
+  -> deterministische Spider-Regeln erzeugen ausschliesslich legale Zuege
+  -> TypeSafe/Jev waehlt zwischen diesen legalen Zuegen
   -> vor Ausfuehrung wird das Brett erneut gelesen
   -> nur bei identischem, vollstaendigem Brett wird die echte Maus bewegt
 ```
@@ -19,8 +20,10 @@ Es verwendet fuer die Kartenerkennung:
 
 - **kein UI Automation (UIA)**
 - **kein OCR**
-- **kein LLM / Ollama**
+- **kein Vision-LLM / Ollama**
 - keine Accessibility-Namen der Karten
+
+**TypeSafe/Jev ist weiterhin Teil des Agenten.** Es sieht nicht den Screenshot, sondern bekommt nur den vollstaendig erkannten Brettzustand und die bereits regelgeprueften legalen Kandidaten. Ohne erfolgreich verbundenen TypeSafe-API-Key wird kein Zug geplant oder ausgefuehrt.
 
 ## Start
 
@@ -34,12 +37,13 @@ Danach: http://127.0.0.1:8020
 ## Empfohlener erster Test
 
 1. Solitaire & Casual Games offen und sichtbar lassen.
-2. Im Tool das Solitaire-Fenster auswaehlen.
-3. **Brett analysieren** druecken.
-4. Pruefen, ob alle 10 Spalten korrekt angezeigt werden.
-5. Falsch erkannte oder mit `?` markierte Karten unten mit dem richtigen Rang anlernen.
-6. Erst wenn **BOARD OK** angezeigt wird, **Zug planen** testen.
-7. **Sicherer Schritt** zeigt den Zug 1,5 Sekunden als START/ZIEL an und fuehrt ihn danach nur aus, wenn ein frischer Screenshot exakt denselben Brettzustand ergibt.
+2. Im Tool den **TypeSafe API-Key** eintragen und **API verbinden** druecken.
+3. Das Solitaire-Fenster auswaehlen.
+4. **Brett analysieren** druecken.
+5. Pruefen, ob alle 10 Spalten korrekt angezeigt werden.
+6. Falsch erkannte oder mit `?` markierte Karten unten mit dem richtigen Rang anlernen.
+7. Erst wenn **BOARD OK** angezeigt wird, **Zug planen** testen. TypeSafe/Jev waehlt dann zwischen den legalen Zuegen.
+8. **Sicherer Schritt** zeigt den Zug 1,5 Sekunden als START/ZIEL an und fuehrt ihn danach nur aus, wenn ein frischer Screenshot exakt denselben Brettzustand ergibt.
 
 ## Template-Lernen
 
