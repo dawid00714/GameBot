@@ -75,7 +75,7 @@ function nearbyPlayers(bot) {
     .slice(0, 8);
 }
 
-export function observe(bot, {plan=null, recent=[], step=0}={}) {
+export function observe(bot, {plan=null, recent=[], step=0, userDirective=null}={}) {
   return {
     step,
     position: position(bot.entity?.position),
@@ -90,6 +90,7 @@ export function observe(bot, {plan=null, recent=[], step=0}={}) {
     nearbyBlocks: nearbyBlocks(bot),
     nearbyEntities: nearbyEntities(bot),
     nearbyPlayers: nearbyPlayers(bot),
+    userDirective,
     planner: plan,
     recent: recent.slice(-8)
   };
