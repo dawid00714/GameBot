@@ -1,0 +1,23 @@
+{
+  "name": "minecraft-jev-ollama-agent",
+  "version": "0.7.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/agent.mjs",
+    "check:minecraft": "node src/check-minecraft.mjs",
+    "check:jev": "node src/check-jev.mjs",
+    "benchmark:ollama": "node src/benchmark-ollama.mjs",
+    "check:protocol": "node src/check-protocol.mjs",
+    "dream:status": "node src/dream-rsi-status.mjs"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "mineflayer": "https://github.com/Complexity-ML/mineflayer-26.2/releases/download/complexity-26.2.3/mineflayer-complexity-26.2.3.tgz",
+    "mineflayer-pathfinder": "^2.4.5",
+    "vec3": "^0.1.10"
+  }
+}
