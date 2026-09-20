@@ -128,6 +128,22 @@ export function buildCandidates(bot, state, plan) {
     );
   }
 
+  // Visible human players are explicit navigation targets. This lets the planner
+  // say "move toward the player" without inventing a waypoint.
+  for (const player of (state.nearbyPlayers || []).slice(0, 2)) {
+    if (player.distance <= 2.5) continue;
+    add(
+      'follow_player_' + player.username,
+      `Move toward visible player ${player.username}; current distance ${player.distance} blocks.`,
+      async () => {
+        const live = bot.players?.[player.username]?.entity;
+        if (!live?.position) throw new Error('Player is no longer visible: ' + player.username);
+        await goNear(bot, live.position, 2);
+        return 'Moved near player ' + player.username;
+      }
+    );
+  }
+
   // Planner waypoint becomes a bounded navigation action.
   if (plan?.waypoint) {
     const wp = vec(plan.waypoint);
@@ -230,12 +246,16 @@ export function buildCandidates(bot, state, plan) {
   // Local exploration is available when the planner has no known waypoint.
   if (!plan?.waypoint) {
     const p = bot.entity.position.floored();
+    const recentActions = new Set((state.recent || []).slice(-4).map(r => r.action));
     for (const [name, dx, dz] of [
       ['north',0,-8], ['east',8,0], ['south',0,8], ['west',-8,0]
     ]) {
+      const key = 'explore_' + name;
+      // Do not offer the same exploration direction again immediately.
+      if (recentActions.has(key)) continue;
       const target = p.offset(dx, 0, dz);
       add(
-        'explore_' + name,
+        key,
         `Explore about 8 blocks ${name} to reveal more terrain because no trusted waypoint is known.`,
         () => goNear(bot, target, 2).then(() => 'Explored ' + name + '.')
       );
