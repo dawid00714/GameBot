@@ -11,11 +11,12 @@ from pydantic import BaseModel, Field
 
 from capture import capture_window, list_windows, window_info
 from input_win import drag_client
-from solver import best_move, legal_moves
+from solver import legal_moves
+from typesafe_chooser import TypeSafeError, choose as choose_typesafe, set_key as set_typesafe_key, status as typesafe_status, validate as validate_typesafe
 from vision import BoardObservation, RANKS, SpiderVision
 
 
-app = FastAPI(title="SpiderVision2", version="1.0.0")
+app = FastAPI(title="SpiderVision2", version="1.1.0")
 vision = SpiderVision()
 lock = threading.RLock()
 
@@ -28,6 +29,10 @@ current_plan: dict[str, Any] | None = None
 
 class WindowRequest(BaseModel):
     hwnd: int
+
+
+class ApiKeyRequest(BaseModel):
+    api_key: str = ""
 
 
 class LearnRequest(BaseModel):
@@ -131,9 +136,14 @@ def _plan_locked() -> dict[str, Any]:
             ),
         )
 
-    move = best_move(board)
-    if move is None:
+    moves = legal_moves(board)
+    if not moves:
         raise HTTPException(status_code=409, detail="Kein legaler Tableau-Zug gefunden.")
+
+    try:
+        move, model_debug = choose_typesafe(board, moves)
+    except TypeSafeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     src_col = board.columns[move.source]
     dst_col = board.columns[move.destination]
@@ -162,7 +172,9 @@ def _plan_locked() -> dict[str, Any]:
         "end": [round(end[0], 1), round(end[1], 1)],
         "board_signature": _signature(board),
         "planned_at": time.time(),
-        "legal_move_count": len(legal_moves(board)),
+        "legal_move_count": len(moves),
+        "chooser": "TypeSafe/Jev",
+        "model_debug": model_debug,
     }
     last_annotated = _draw_plan(vision.annotate(last_frame, board), current_plan)
     return current_plan
@@ -221,6 +233,20 @@ def learn(req: LearnRequest):
             return result
         except Exception as exc:
             raise HTTPException(status_code=409, detail=f"{type(exc).__name__}: {exc}")
+
+
+@app.post("/api/typesafe/key")
+def typesafe_key(req: ApiKeyRequest):
+    try:
+        set_typesafe_key(req.api_key)
+        result = validate_typesafe()
+        return {
+            "ok": True,
+            "typesafe": result,
+            "message": "TypeSafe/Jev API geprüft und bereit.",
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"{type(exc).__name__}: {exc}")
 
 
 @app.post("/api/plan")
@@ -305,15 +331,17 @@ def status():
         except Exception:
             info = None
     return {
-        "version": "1.0.0",
+        "version": "1.1.0",
         "window": info,
         "board": last_board.to_dict() if last_board else None,
         "plan": current_plan,
         "templates": vision.templates.summary(),
+        "typesafe": typesafe_status(),
         "rules": {
             "uia": False,
             "ocr": False,
-            "llm": False,
+            "llm_for_vision": False,
+            "decision_model": "TypeSafe/Jev",
             "mouse_requires_complete_board": True,
             "mouse_requires_fresh_identical_board": True,
         },
@@ -354,7 +382,7 @@ h1{margin:0;font-size:28px}h2{font-size:15px;margin:0 0 10px}.muted{color:var(--
 main{max-width:1500px;margin:auto;padding:12px 22px 35px;display:grid;grid-template-columns:minmax(650px,1.55fr) minmax(400px,.85fr);gap:16px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px}.stack{display:grid;gap:14px}
 img{width:100%;display:block;border-radius:10px;background:#050607;border:1px solid #000;min-height:360px;object-fit:contain}
-.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}button,select{background:#242d40;color:#fff;border:1px solid #39445c;border-radius:9px;padding:9px 11px;min-height:39px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}button,select,input{background:#242d40;color:#fff;border:1px solid #39445c;border-radius:9px;padding:9px 11px;min-height:39px}input{min-width:220px;flex:1}
 button{font-weight:700;cursor:pointer}.primary{background:#2184a0}.danger{background:#743140}select{min-width:130px}
 pre{background:#090c12;border:1px solid var(--line);border-radius:9px;padding:10px;max-height:320px;overflow:auto;white-space:pre-wrap}
 table{width:100%;border-collapse:collapse;font-size:12px}th,td{padding:6px;border-bottom:1px solid #263044;text-align:left}td select{min-height:31px;padding:4px 7px}
@@ -367,9 +395,9 @@ table{width:100%;border-collapse:collapse;font-size:12px}th,td{padding:6px;borde
 <header>
 <div>
 <h1>SpiderVision2</h1>
-<div class="muted">Neues Tool · Screenshot → OpenCV → 13 Rang-Templates → Regeln → Maus</div>
+<div class="muted">Screenshot → OpenCV → 13 Rang-Templates → legale Züge → TypeSafe/Jev → Maus</div>
 </div>
-<div class="badge">v1.0 · kein UIA · kein OCR · kein LLM</div>
+<div class="badge">v1.1 · Vision ohne UIA/OCR/LLM · Entscheidung mit TypeSafe/Jev</div>
 </header>
 <main>
 <section class="stack">
@@ -397,7 +425,19 @@ table{width:100%;border-collapse:collapse;font-size:12px}th,td{padding:6px;borde
 </div>
 
 <div class="card">
-<h2>2 · Erst lesen, dann bewegen</h2>
+<h2>2 · TypeSafe / Jev</h2>
+<div class="muted" style="margin-bottom:8px">
+Die Bild-Erkennung läuft lokal ohne LLM. TypeSafe/Jev bekommt danach ausschließlich die bereits regelgeprüften legalen Züge und wählt einen davon aus.
+</div>
+<div class="row">
+<input id="apiKey" type="password" placeholder="TypeSafe API-Key">
+<button id="connectTypeSafe" class="primary">API verbinden</button>
+</div>
+<div id="typesafeStatus" class="muted" style="margin-top:8px">Nicht verbunden.</div>
+</div>
+
+<div class="card">
+<h2>3 · Erst lesen, dann bewegen</h2>
 <div class="notice">
 SpiderVision2 bewegt die Maus nur, wenn alle 10 Spalten eindeutig als erkannt oder leer gelten. Direkt vor der Mausbewegung wird das Brett erneut gelesen und muss exakt mit dem geplanten Brett übereinstimmen.
 </div>
@@ -410,7 +450,7 @@ SpiderVision2 bewegt die Maus nur, wenn alle 10 Spalten eindeutig als erkannt od
 </div>
 
 <div class="card">
-<h2>3 · Karten-Erkennung anlernen</h2>
+<h2>4 · Karten-Erkennung anlernen</h2>
 <div class="muted" style="margin-bottom:8px">
 Wenn ein Rang mit ? oder falsch angezeigt wird, wähle hier den echten Rang. Der Bildausschnitt wird lokal als Template gespeichert. Keine Cloud, kein OCR.
 </div>
@@ -463,6 +503,16 @@ async function selectWindow(){
 
 function render(d){
   statusData=d;
+  const ts=d.typesafe||{};
+  if(ts.validated){
+    $('typesafeStatus').innerHTML='<span class="ok">API geprüft & bereit · '+(ts.model||'Jev')+'</span>';
+  }else if(ts.configured && ts.validation_error){
+    $('typesafeStatus').innerHTML='<span class="bad">API-Fehler: '+ts.validation_error+'</span>';
+  }else if(ts.configured){
+    $('typesafeStatus').innerHTML='<span class="warn">API-Key gespeichert, noch nicht geprüft</span>';
+  }else{
+    $('typesafeStatus').textContent='Nicht verbunden.';
+  }
   const b=d.board;
   $('templates').textContent=JSON.stringify(d.templates||{},null,2);
   if(!b) return;
@@ -479,7 +529,8 @@ function render(d){
       cards:c.cards.map(x=>x.rank+' ('+Number(x.confidence).toFixed(2)+')')
     })),
     diagnostics:b.diagnostics,
-    plan:d.plan||null
+    plan:d.plan||null,
+    typesafe:d.typesafe||null
   };
   $('boardDump').textContent=JSON.stringify(concise,null,2);
 
@@ -496,6 +547,19 @@ function render(d){
       tbody.appendChild(tr);
     });
   });
+}
+
+async function connectTypeSafe(){
+  try{
+    const key=$('apiKey').value.trim();
+    $('typesafeStatus').textContent='TypeSafe wird geprüft…';
+    const d=await api('/api/typesafe/key',{method:'POST',body:JSON.stringify({api_key:key})});
+    $('typesafeStatus').innerHTML='<span class="ok">API geprüft & bereit · '+(d.typesafe.model||'Jev')+'</span>';
+    $('message').textContent='TypeSafe/Jev verbunden.';
+  }catch(e){
+    $('typesafeStatus').innerHTML='<span class="bad">'+e.message+'</span>';
+    $('message').textContent=e.message;
+  }
 }
 
 async function analyze(){
@@ -520,7 +584,7 @@ async function plan(){
     const d=await api('/api/plan',{method:'POST'});
     const st=await api('/api/status');
     render(st);refreshFrame();
-    $('message').textContent='Geplant: '+d.plan.move.notation+' · noch keine Mausbewegung.';
+    $('message').textContent='TypeSafe/Jev gewählt: '+d.plan.move.notation+' · noch keine Mausbewegung.';
     return d.plan;
   }catch(e){$('message').textContent=e.message;throw e}
 }
@@ -538,6 +602,7 @@ async function safeStep(){
 
 $('refresh').onclick=loadWindows;
 $('select').onclick=selectWindow;
+$('connectTypeSafe').onclick=connectTypeSafe;
 $('analyze').onclick=analyze;
 $('plan').onclick=plan;
 $('safeStep').onclick=safeStep;
@@ -546,7 +611,7 @@ loadWindows();
 setInterval(async()=>{
   try{
     const s=await api('/api/status');
-    if(s.window){render(s);refreshFrame()}
+    render(s); if(s.window){refreshFrame()}
   }catch{}
 },1000);
 </script>
