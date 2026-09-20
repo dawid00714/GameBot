@@ -482,3 +482,51 @@ hast du eine tuer im inventar?
 ```
 
 Nach erfolgreichem Einbau wird die Tuer im Haus-Memory gespeichert.
+
+
+## Ollama Chat Command Interpreter v0.6.0
+
+Chat-Befehle werden nicht mehr ueber fest codierte deutsche Regex-Saetze erkannt.
+
+Stattdessen bekommt Ollama bei jeder Spielernachricht:
+
+- den Originaltext,
+- das aktuelle Inventar inklusive Item-Namen und Slots,
+- GameMode,
+- Bot-Position,
+- sichtbare Spieler,
+- aktuellen Plan,
+- aktive Benutzeraufgabe,
+- Metadaten des zuletzt gebauten Hauses,
+- die aktuell erlaubten High-Level-Aktionstypen.
+
+Ollama erzeugt daraus einen strukturierten Aktionsbefehl, zum Beispiel:
+
+```json
+{
+  "kind": "command",
+  "action": "install_door",
+  "arguments": {
+    "material": null,
+    "doorItem": null
+  },
+  "reply": "Okay, ich setze die vorhandene Tuer ein."
+}
+```
+
+Der Node-Agent validiert nur noch den erzeugten Befehl gegen den echten Minecraft-Zustand und fuehrt ihn ueber die vorhandenen Skills aus. TypeSafe/JEV bleibt fuer die Auswahl der konkreten Low-Level-Aktion innerhalb einer Aufgabe zustaendig.
+
+Fragen und Aussagen erzeugen keine Aufgabe:
+
+```
+"Du hast doch eine Tuer im Inventar."
+-> conversation / none
+
+"Hast du eine Tuer im Inventar?"
+-> question / none
+
+"Baue die Tuer ein."
+-> command / install_door
+```
+
+Ein lokaler Regex bleibt nur als Not-Stopp-Fallback fuer `stop/stopp/pause`, falls Ollama selbst nicht erreichbar ist.
