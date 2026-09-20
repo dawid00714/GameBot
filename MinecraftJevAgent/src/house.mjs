@@ -92,3 +92,16 @@ export function chooseHouseMaterial(state, remainingCount) {
   }
   return 'dirt';
 }
+
+
+export function houseDoorInfo(directive) {
+  if (!directive?.anchor) return null;
+  const a = directive.anchor;
+  return {
+    lower: {x: a.x + 2, y: a.y, z: a.z},
+    upper: {x: a.x + 2, y: a.y + 1, z: a.z},
+    side: 'north',
+    hasPhysicalDoor: false,
+    description: 'two-block-high doorway opening centered on the north wall'
+  };
+}
