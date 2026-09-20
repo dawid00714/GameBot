@@ -360,3 +360,29 @@ Beim normalen Start muss vor dem Minecraft-Connect stehen:
 ```
 
 Ausserdem ist automatisches Pathfinder-Scaffolding/Pillaring deaktiviert. Blockplatzierung erfolgt damit nur ueber explizite Agent-Aktionen.
+
+
+## Planner-Guard v0.4.2
+
+Die Plan-Pipeline prueft jetzt nicht mehr nur, ob irgendeine Aktion existiert, sondern ob eine Aktion den vorgeschlagenen Plan **direkt ausfuehren kann**.
+
+Zusaetzlich werden fehlerhafte Ollama-Namen normalisiert:
+
+```
+minecraft_dirt -> dirt
+minecraft:dirt -> dirt
+minecraft_crafting_table -> crafting_table
+```
+
+Beispiele fuer Plan-Relevanz:
+
+```
+Ziel: dirt sammeln       -> mine_dirt_...
+Ziel: Spieler folgen     -> follow_player_...
+Ziel: erkunden           -> explore_...
+Ziel: crafting_table     -> craft_crafting_table
+```
+
+Plaene wie `craft a tool` ohne konkretes Crafting-Target oder `loot the player` werden als nicht sofort ausfuehrbar verworfen.
+
+Wenn ein gewaehlter Plan konkrete relevante Aktionen besitzt, bekommt JEV fuer die Action-Choice nur noch diese Aktionen. `wait` und unpassende Exploration konkurrieren dann nicht mehr mit einer echten Fortschrittsaktion.
