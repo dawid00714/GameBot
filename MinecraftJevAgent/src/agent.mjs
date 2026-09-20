@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { mineflayer, pf } from './minecraft-runtime.mjs';
 import { config } from './config.mjs';
-import { makePlanCandidates, answerPlayerChat } from './ollama-planner.mjs';
+import { makePlanCandidates, answerPlayerChat, interpretPlayerMessage } from './ollama-planner.mjs';
 import { choosePlan, chooseAction } from './jev-controller.mjs';
 import { observe } from './state.mjs';
 import { buildCandidates } from './actions.mjs';
@@ -71,182 +71,202 @@ function normalizeChatCommand(message) {
     .trim();
 }
 
-function matches(text, expressions) {
-  return expressions.some(re => re.test(text));
-}
-
 async function onUserChat(username, message) {
   if (!username || username === bot.username) return;
   const command = normalizeChatCommand(message);
-  const lower = command.toLowerCase();
-
-  if (matches(lower, [/^(hilfe|help|befehle)$/])) {
-    sayStatus('Befehle: "folge mir", "komm her", "baue hier ein haus", "baue eine tuer ein", "stopp", "weiter", "autonom", "status". Fragen kannst du mir auch stellen.', true);
-    return;
-  }
-
-  if (matches(lower, [/^(status|was machst du\??|was tust du\??)$/])) {
-    const objective = plan?.objective ? ' Plan: ' + plan.objective : '';
-    sayStatus(directiveSummary() + objective, true);
-    return;
-  }
-
-  if (matches(lower, [/(wo|where).*(tuer|tür|door)/, /(tuer|tür|door).*(wo|where)/])) {
-    const houseRef = userDirective?.type === 'build_house' ? userDirective : lastBuiltHouse;
-    const door = houseDoorInfo(houseRef);
-    if (!door) {
-      sayStatus('Ich habe noch kein Haus gespeichert, zu dem ich dir eine Tuerposition nennen kann.', true);
-    } else {
-      sayStatus(`Die Tueroeffnung ist an der Nordseite bei x=${door.lower.x}, y=${door.lower.y}, z=${door.lower.z}. Es ist aktuell nur eine Oeffnung, keine echte Tuer.`, true);
-    }
-    return;
-  }
-
-  if (matches(lower, [/(inventar|inventory).*(tuer|tür|door)/, /(tuer|tür|door).*(inventar|inventory)/])) {
-    const doors = bot.inventory.items()
-      .filter(i => i.name.endsWith('_door') && !i.name.endsWith('_trapdoor'))
-      .map(i => i.name + ' x' + i.count);
-    sayStatus(
-      doors.length
-        ? 'Ja. Im Inventar habe ich: ' + doors.join(', ') + '.'
-        : 'Nein. Ich sehe aktuell keine normale Tuer in meinem Bot-Inventar.',
-      true
-    );
-    return;
-  }
-
-  if (matches(lower, [/^(stopp|stop|pause|warte)$/])) {
-    pausedByUser = true;
-    try { bot.pathfinder.setGoal(null); } catch {}
-    try { bot.clearControlStates(); } catch {}
-    sayStatus('Okay, ich stoppe und warte.', true);
-    return;
-  }
-
-  if (matches(lower, [/^(weiter|resume|mach weiter)$/])) {
-    pausedByUser = false;
-    replanRequested = true;
-    sayStatus('Okay, ich mache weiter.', true);
-    return;
-  }
-
-  if (matches(lower, [/^(autonom|autonomer modus|mach selbst|entscheide selbst)$/])) {
-    userDirective = null;
-    pausedByUser = false;
-    replanRequested = true;
-    sayStatus('Autonomer Modus aktiviert.', true);
-    return;
-  }
-
-  if (matches(lower, [/^(folge mir|follow me)$/])) {
-    userDirective = {
-      type: 'follow_player',
-      username,
-      requestedBy: username,
-      createdAt: Date.now()
-    };
-    pausedByUser = false;
-    replanRequested = true;
-    sayStatus('Okay, ich folge dir, bis du "stopp" oder "autonom" schreibst.', true);
-    return;
-  }
-
-  if (matches(lower, [/^(komm her|come here)$/])) {
-    userDirective = {
-      type: 'come_here',
-      username,
-      requestedBy: username,
-      createdAt: Date.now()
-    };
-    pausedByUser = false;
-    replanRequested = true;
-    sayStatus('Okay, ich komme einmal zu dir.', true);
-    return;
-  }
-
-  if (matches(lower, [
-    /(baue|bau|setz|setze|installier|installiere).*(tuer|tür|door)/,
-    /(tuer|tür|door).*(einbauen|einbauen|einsetzen|installieren|setzen|bauen)/
-  ])) {
-    const houseRef = lastBuiltHouse;
-    if (!houseRef?.anchor) {
-      sayStatus('Ich habe kein gebautes Haus gespeichert, in das ich eine Tuer einbauen kann.', true);
-      return;
-    }
-
-    const door = bot.inventory.items().find(i => i.name.endsWith('_door') && !i.name.endsWith('_trapdoor'));
-    if (!door) {
-      sayStatus('Ich sehe keine normale Tuer in meinem Inventar. Ich veraendere die Wand nicht, bis eine Tuer vorhanden ist.', true);
-      return;
-    }
-
-    userDirective = {
-      type: 'install_door',
-      requestedBy: username,
-      anchor: {...houseRef.anchor},
-      material: houseRef.material || null,
-      doorItem: door.name,
-      createdAt: Date.now()
-    };
-    pausedByUser = false;
-    replanRequested = true;
-    sayStatus('Okay. Ich baue ' + door.name + ' in die gespeicherte Tueroeffnung ein.', true);
-    return;
-  }
-
-  if (matches(lower, [/(baue|bau).*\bhaus\b/, /build.*\bhouse\b/])) {
-    const player = bot.players?.[username]?.entity;
-    if (!player?.position) {
-      sayStatus('Ich sehe dich gerade nicht. Komm bitte in meine Sichtweite und versuche es erneut.', true);
-      return;
-    }
-
-    userDirective = createHouseDirective(username, player.position);
-
-    const currentState = observe(bot, {plan, recent, step, userDirective});
-    const wantsWood = /\b(holz|wood|planken|planks)\b/.test(lower);
-    userDirective.requestedMaterial = wantsWood ? 'wood' : 'auto';
-    userDirective.material = chooseHouseMaterial(
-      currentState,
-      getHouseStatus(bot, userDirective).remaining,
-      userDirective.requestedMaterial
-    );
-
-    lastBuiltHouse = {...userDirective};
-    pausedByUser = false;
-    replanRequested = true;
-    sayStatus(
-      userDirective.requestedMaterial === 'wood'
-        ? 'Okay. Ich baue hier ein kleines 5x5-Haus aus ' + userDirective.material + '.'
-        : 'Okay. Ich baue hier ein kleines 5x5-Haus. Falls Material fehlt, sammle ich zuerst Dirt.',
-      true
-    );
-    return;
-  }
-
-  // Any other chat message is a question/conversation, not an action command.
-  // Answer through Ollama without changing the current movement/task.
   if (!command || chatBusy) return;
+
   chatBusy = true;
   try {
     const currentState = observe(bot, {plan, recent, step, userDirective});
+    const fullInventory = bot.inventory.items().map(item => ({
+      name: item.name,
+      count: item.count,
+      slot: item.slot
+    }));
     const chatContext = {
+      speaker: username,
       botPosition: currentState.position,
-      inventory: currentState.inventory,
+      gameMode: currentState.gameMode,
+      inventory: fullInventory,
       nearbyPlayers: currentState.nearbyPlayers,
       currentPlan: plan,
-      userDirective,
+      currentUserDirective: userDirective,
       lastBuiltHouse: lastBuiltHouse ? {
         anchor: lastBuiltHouse.anchor,
         material: lastBuiltHouse.material || null,
         door: houseDoorInfo(lastBuiltHouse)
-      } : null
+      } : null,
+      availableHighLevelActions: [
+        'build_house',
+        'install_door',
+        'follow_player',
+        'come_here',
+        'pause',
+        'resume',
+        'autonomous',
+        'status',
+        'help'
+      ]
     };
-    const reply = await answerPlayerChat(command, chatContext);
+
+    console.log('\n[OLLAMA CHAT] Interpretiere:', JSON.stringify(command));
+    const intent = await interpretPlayerMessage(command, chatContext);
+    console.log('[OLLAMA CHAT] ACTION COMMAND:', JSON.stringify(intent, null, 2));
+    log('chat_intent', {username, message:command, intent});
+
+    // Emergency stop stays deterministic if Ollama explicitly classified pause.
+    if (intent.kind === 'command' && intent.action === 'pause') {
+      pausedByUser = true;
+      try { bot.pathfinder.setGoal(null); } catch {}
+      try { bot.clearControlStates(); } catch {}
+      sayStatus(intent.reply || 'Okay, ich stoppe und warte.', true);
+      return;
+    }
+
+    if (intent.kind === 'command' && intent.action === 'resume') {
+      pausedByUser = false;
+      replanRequested = true;
+      sayStatus(intent.reply || 'Okay, ich mache weiter.', true);
+      return;
+    }
+
+    if (intent.kind === 'command' && intent.action === 'autonomous') {
+      userDirective = null;
+      pausedByUser = false;
+      replanRequested = true;
+      sayStatus(intent.reply || 'Autonomer Modus aktiviert.', true);
+      return;
+    }
+
+    if (intent.kind === 'command' && intent.action === 'follow_player') {
+      userDirective = {
+        type: 'follow_player',
+        username,
+        requestedBy: username,
+        source: 'ollama_chat_command',
+        originalMessage: command,
+        createdAt: Date.now()
+      };
+      pausedByUser = false;
+      replanRequested = true;
+      sayStatus(intent.reply || 'Okay, ich folge dir.', true);
+      return;
+    }
+
+    if (intent.kind === 'command' && intent.action === 'come_here') {
+      userDirective = {
+        type: 'come_here',
+        username,
+        requestedBy: username,
+        source: 'ollama_chat_command',
+        originalMessage: command,
+        createdAt: Date.now()
+      };
+      pausedByUser = false;
+      replanRequested = true;
+      sayStatus(intent.reply || 'Okay, ich komme zu dir.', true);
+      return;
+    }
+
+    if (intent.kind === 'command' && intent.action === 'build_house') {
+      const player = bot.players?.[username]?.entity;
+      if (!player?.position) {
+        sayStatus('Ich sehe dich gerade nicht und kann den Bauort nicht festlegen.', true);
+        return;
+      }
+
+      userDirective = createHouseDirective(username, player.position);
+      userDirective.source = 'ollama_chat_command';
+      userDirective.originalMessage = command;
+
+      const requestedMaterial = intent.arguments.material || 'auto';
+      userDirective.requestedMaterial = requestedMaterial;
+      userDirective.material = chooseHouseMaterial(
+        currentState,
+        getHouseStatus(bot, userDirective).remaining,
+        requestedMaterial
+      );
+
+      lastBuiltHouse = {...userDirective};
+      pausedByUser = false;
+      replanRequested = true;
+      sayStatus(
+        intent.reply ||
+        ('Okay. Ich baue hier ein 5x5-Haus aus ' + userDirective.material + '.'),
+        true
+      );
+      return;
+    }
+
+    if (intent.kind === 'command' && intent.action === 'install_door') {
+      if (!lastBuiltHouse?.anchor) {
+        sayStatus('Ich habe kein gespeichertes Haus mit Tueroeffnung.', true);
+        return;
+      }
+
+      const doors = bot.inventory.items()
+        .filter(i => i.name.endsWith('_door') && !i.name.endsWith('_trapdoor'));
+
+      let door = null;
+      if (intent.arguments.doorItem) {
+        door = doors.find(i => i.name === intent.arguments.doorItem) || null;
+      }
+      if (!door) door = doors[0] || null;
+
+      if (!door) {
+        sayStatus('Ich habe aktuell keine normale Tuer im Inventar. Ich veraendere das Haus nicht.', true);
+        return;
+      }
+
+      userDirective = {
+        type: 'install_door',
+        requestedBy: username,
+        anchor: {...lastBuiltHouse.anchor},
+        material: lastBuiltHouse.material || null,
+        doorItem: door.name,
+        source: 'ollama_chat_command',
+        originalMessage: command,
+        createdAt: Date.now()
+      };
+      pausedByUser = false;
+      replanRequested = true;
+      sayStatus(intent.reply || ('Okay. Ich setze ' + door.name + ' in die Tueroeffnung ein.'), true);
+      return;
+    }
+
+    if (intent.kind === 'command' && intent.action === 'status') {
+      const objective = plan?.objective ? ' Plan: ' + plan.objective : '';
+      sayStatus(directiveSummary() + objective, true);
+      return;
+    }
+
+    if (intent.kind === 'command' && intent.action === 'help') {
+      sayStatus('Sag mir frei, was ich tun soll, z.B. "baue hier ein Haus aus Holz", "setz die Tuer ein", "folge mir" oder stelle mir eine Frage.', true);
+      return;
+    }
+
+    // Questions and normal statements are answered, but NEVER mutate userDirective.
+    const answerContext = {
+      ...chatContext,
+      interpretedAs: intent.kind,
+      interpretedAction: intent.action
+    };
+    const reply = intent.reply || await answerPlayerChat(command, answerContext);
     if (reply) sayStatus(reply, true);
   } catch (error) {
-    console.error('[CHAT] Ollama-Antwort fehlgeschlagen:', error.message);
-    sayStatus('Ich konnte die Frage gerade nicht beantworten.', true);
+    console.error('[CHAT] Ollama-Command-Interpreter fehlgeschlagen:', error.message);
+    log('chat_interpreter_error', {username, message:command, error:error.message});
+
+    // Only a literal emergency stop has a local fallback if Ollama is unavailable.
+    if (/^(stopp|stop|pause)$/i.test(command)) {
+      pausedByUser = true;
+      try { bot.pathfinder.setGoal(null); } catch {}
+      try { bot.clearControlStates(); } catch {}
+      sayStatus('Ollama ist ausgefallen, aber ich habe den Not-Stopp ausgefuehrt.', true);
+    } else {
+      sayStatus('Ich konnte deine Nachricht gerade nicht mit Ollama interpretieren.', true);
+    }
   } finally {
     chatBusy = false;
   }
