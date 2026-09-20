@@ -386,3 +386,54 @@ Ziel: crafting_table     -> craft_crafting_table
 Plaene wie `craft a tool` ohne konkretes Crafting-Target oder `loot the player` werden als nicht sofort ausfuehrbar verworfen.
 
 Wenn ein gewaehlter Plan konkrete relevante Aktionen besitzt, bekommt JEV fuer die Action-Choice nur noch diese Aktionen. `wait` und unpassende Exploration konkurrieren dann nicht mehr mit einer echten Fortschrittsaktion.
+
+
+## In-Game Chat und Benutzeraufgaben
+
+Version 0.5.0 kann direkt im Minecraft-Chat angesprochen werden. Der Bot antwortet selbst im Chat und meldet dort seinen aktuellen Plan bzw. den Fortschritt einer Benutzeraufgabe.
+
+Unterstuetzte Befehle:
+
+```
+hilfe
+status
+folge mir
+komm her
+baue hier ein haus
+stopp
+weiter
+autonom
+```
+
+Die Praefixe `!bot`, `bot`, `jev` oder `JevOllama` sind optional. Beide Varianten funktionieren:
+
+```
+folge mir
+!bot folge mir
+```
+
+### Hausbau
+
+`baue hier ein haus` erzeugt ein kleines 5x5-Starterhaus wenige Bloecke neben der Position des Spielers, der den Befehl gegeben hat.
+
+Der Agent:
+
+1. prueft den Bauplan,
+2. nutzt vorhandene Planken/Cobblestone wenn genug vorhanden sind,
+3. verwendet sonst Dirt und sammelt fehlendes Material,
+4. setzt das Haus blockweise,
+5. meldet den Fortschritt im Minecraft-Chat.
+
+Der Bauplan besteht aus zwei Block hohen Waenden, einer Tuer-Oeffnung und einem flachen Dach (55 Bloecke).
+
+### "Sprechblase"
+
+Vanilla Minecraft hat fuer normale Spieler keine echte grafische Sprechblase ueber dem Kopf. Der Agent emuliert dies deshalb ohne Mod/Plugin ueber sichtbare In-Game-Chatmeldungen:
+
+```
+[JevOllama] Plan: Follow the visible player Dawid
+[JevOllama] Hausbau: 25/55 Bloecke.
+[JevOllama] Haus fertig.
+```
+
+Eine echte schwebende Textblase ueber dem Bot wuerde ein Client-Mod, Server-Plugin oder OP-Kommandos/Text-Display-Entities benoetigen.
