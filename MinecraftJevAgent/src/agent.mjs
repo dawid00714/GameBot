@@ -2,11 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { mineflayer, pf } from './minecraft-runtime.mjs';
 import { config } from './config.mjs';
-import { makePlanCandidates } from './ollama-planner.mjs';
+import { makePlanCandidates, answerPlayerChat } from './ollama-planner.mjs';
 import { choosePlan, chooseAction } from './jev-controller.mjs';
 import { observe } from './state.mjs';
 import { buildCandidates } from './actions.mjs';
-import { createHouseDirective, getHouseStatus, chooseHouseMaterial } from './house.mjs';
+import { createHouseDirective, getHouseStatus, chooseHouseMaterial, houseDoorInfo } from './house.mjs';
 
 const { pathfinder, Movements } = pf;
 
@@ -43,6 +43,8 @@ let pausedByUser = false;
 let replanRequested = false;
 let lastSpokenPlan = '';
 let lastStatusAt = 0;
+let lastBuiltHouse = null;
+let chatBusy = false;
 
 function sayStatus(text, force=false) {
   const now = Date.now();
@@ -72,19 +74,30 @@ function matches(text, expressions) {
   return expressions.some(re => re.test(text));
 }
 
-function onUserChat(username, message) {
+async function onUserChat(username, message) {
   if (!username || username === bot.username) return;
   const command = normalizeChatCommand(message);
   const lower = command.toLowerCase();
 
   if (matches(lower, [/^(hilfe|help|befehle)$/])) {
-    sayStatus('Befehle: "folge mir", "baue hier ein haus", "stopp", "weiter", "autonom", "status".', true);
+    sayStatus('Befehle: "folge mir", "komm her", "baue hier ein haus", "stopp", "weiter", "autonom", "status". Fragen kannst du mir auch stellen.', true);
     return;
   }
 
   if (matches(lower, [/^(status|was machst du\??|was tust du\??)$/])) {
     const objective = plan?.objective ? ' Plan: ' + plan.objective : '';
     sayStatus(directiveSummary() + objective, true);
+    return;
+  }
+
+  if (matches(lower, [/(wo|where).*(tuer|tür|door)/, /(tuer|tür|door).*(wo|where)/])) {
+    const houseRef = userDirective?.type === 'build_house' ? userDirective : lastBuiltHouse;
+    const door = houseDoorInfo(houseRef);
+    if (!door) {
+      sayStatus('Ich habe noch kein Haus gespeichert, zu dem ich dir eine Tuerposition nennen kann.', true);
+    } else {
+      sayStatus(`Die Tueroeffnung ist an der Nordseite bei x=${door.lower.x}, y=${door.lower.y}, z=${door.lower.z}. Es ist aktuell nur eine Oeffnung, keine echte Tuer.`, true);
+    }
     return;
   }
 
@@ -145,14 +158,46 @@ function onUserChat(username, message) {
     }
 
     userDirective = createHouseDirective(username, player.position);
+    lastBuiltHouse = {...userDirective};
     pausedByUser = false;
     replanRequested = true;
     sayStatus('Okay. Ich baue hier ein kleines 5x5-Haus. Falls Material fehlt, sammle ich zuerst Dirt.', true);
     return;
   }
+
+  // Any other chat message is a question/conversation, not an action command.
+  // Answer through Ollama without changing the current movement/task.
+  if (!command || chatBusy) return;
+  chatBusy = true;
+  try {
+    const currentState = observe(bot, {plan, recent, step, userDirective});
+    const chatContext = {
+      botPosition: currentState.position,
+      inventory: currentState.inventory,
+      nearbyPlayers: currentState.nearbyPlayers,
+      currentPlan: plan,
+      userDirective,
+      lastBuiltHouse: lastBuiltHouse ? {
+        anchor: lastBuiltHouse.anchor,
+        material: lastBuiltHouse.material || null,
+        door: houseDoorInfo(lastBuiltHouse)
+      } : null
+    };
+    const reply = await answerPlayerChat(command, chatContext);
+    if (reply) sayStatus(reply, true);
+  } catch (error) {
+    console.error('[CHAT] Ollama-Antwort fehlgeschlagen:', error.message);
+    sayStatus('Ich konnte die Frage gerade nicht beantworten.', true);
+  } finally {
+    chatBusy = false;
+  }
 }
 
-bot.on('chat', onUserChat);
+bot.on('chat', (username, message) => {
+  onUserChat(username, message).catch(error => {
+    console.error('[CHAT] Fehler:', error.message);
+  });
+});
 
 function numericTargetsSatisfied(currentState, currentPlan) {
   const entries = Object.entries(currentPlan?.targets || {})
@@ -331,6 +376,7 @@ async function refreshPlan() {
   if (userDirective?.type === 'build_house') {
     const house = getHouseStatus(bot, userDirective);
     if (house.completed) {
+      lastBuiltHouse = {...userDirective};
       sayStatus('Haus fertig. Aufgabe abgeschlossen.', true);
       userDirective = null;
       replanRequested = true;
@@ -646,6 +692,7 @@ async function main() {
     if (userDirective?.type === 'build_house') {
       const house = getHouseStatus(bot, userDirective);
       if (house.completed) {
+        lastBuiltHouse = {...userDirective};
         sayStatus('Haus fertig: ' + house.total + '/' + house.total + ' Bloecke.', true);
         userDirective = null;
         replanRequested = true;
