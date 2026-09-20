@@ -458,3 +458,27 @@ komm her
 ist dagegen einmalig: Der Bot kommt bis auf ca. 2.5 Bloecke heran, meldet `Ich bin da.` und kehrt danach in den autonomen Modus zurueck.
 
 Der autonome Fallback ist jetzt Exploration statt Spieler-Verfolgung.
+
+
+## Tuereinbau v0.5.4
+
+Der Chat-Befehl `baue eine tuer ein` ist jetzt eine echte Benutzeraufgabe statt nur Konversation.
+
+Ablauf:
+
+1. Der Agent verwendet das zuletzt gebaute Haus.
+2. Er sucht eine normale `*_door` im eigenen Inventar.
+3. Ohne vorhandene Tuer veraendert er **keinen** Wandblock.
+4. Mit vorhandener Tuer bearbeitet er ausschliesslich die zwei gespeicherten Tueroeffnungs-Bloecke.
+5. Er setzt die Tuer auf den Bodenblock der Oeffnung und prueft danach, ob ein Tuerblock existiert.
+
+Beispiele:
+
+```
+baue eine tuer ein
+setz eine tuer ein
+installiere die tuer
+hast du eine tuer im inventar?
+```
+
+Nach erfolgreichem Einbau wird die Tuer im Haus-Memory gespeichert.
