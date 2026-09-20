@@ -5,7 +5,7 @@ title SpiderVision2
 
 echo.
 echo ==========================================
-echo   SpiderVision2 v1.0
+echo   SpiderVision2 v1.1
 echo   Kein UIA - kein OCR - kein LLM
 echo ==========================================
 echo.
