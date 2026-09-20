@@ -28,6 +28,7 @@ const bot = mineflayer.createBot({
   port: config.minecraft.port,
   username: config.minecraft.username,
   version: config.minecraft.version,
+  auth: config.minecraft.auth,
   checkTimeoutInterval: 120000
 });
 
@@ -38,8 +39,12 @@ let step = 0;
 let plan = null;
 let recent = [];
 
-bot.on('error', error => log('minecraft_error', {error: error.message}));
+bot.on('error', error => {
+  console.error('Minecraft connection error:', error);
+  log('minecraft_error', {error: error.message, code: error.code, errno: error.errno, syscall: error.syscall});
+});
 bot.on('kicked', reason => {
+  console.error('Minecraft kicked the bot:', reason);
   log('kicked', {reason});
   stopped = true;
 });
