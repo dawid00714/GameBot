@@ -1,6 +1,7 @@
 import { Vec3 } from 'vec3';
 import { pf } from './minecraft-runtime.mjs';
 import { config } from './config.mjs';
+import { getHouseStatus } from './house.mjs';
 
 const { goals } = pf;
 
@@ -69,6 +70,48 @@ async function craftItem(bot, name) {
   return 'Crafted ' + name;
 }
 
+async function placeAt(bot, target, itemName) {
+  const current = bot.blockAt(target);
+  if (current && !['air','cave_air','void_air'].includes(current.name)) {
+    return 'House position already occupied.';
+  }
+
+  const item = bot.inventory.items().find(i => i.name === itemName);
+  if (!item) throw new Error('No ' + itemName + ' in inventory.');
+
+  if (bot.entity.position.distanceTo(target) > 4.2) {
+    await goNear(bot, target, 3);
+  }
+
+  await bot.equip(item, 'hand');
+
+  const faces = [
+    new Vec3(0, 1, 0),
+    new Vec3(1, 0, 0),
+    new Vec3(-1, 0, 0),
+    new Vec3(0, 0, 1),
+    new Vec3(0, 0, -1),
+    new Vec3(0, -1, 0)
+  ];
+
+  for (const face of faces) {
+    const refPos = target.minus(face);
+    const ref = bot.blockAt(refPos);
+    if (!ref || ref.boundingBox !== 'block') continue;
+
+    const freshTarget = bot.blockAt(target);
+    if (freshTarget && !['air','cave_air','void_air'].includes(freshTarget.name)) {
+      return 'House position was filled before placement.';
+    }
+
+    await bounded(bot, bot.placeBlock(ref, face));
+    await bot.waitForTicks(3);
+    return 'Placed ' + itemName + ' at ' + target + '.';
+  }
+
+  throw new Error('No attachable neighbor for house block at ' + target + '.');
+}
+
 async function placeCraftingTable(bot) {
   const table = bot.inventory.items().find(i => i.name === 'crafting_table');
   if (!table) throw new Error('No crafting table in inventory.');
@@ -111,6 +154,23 @@ async function lootChest(bot, pos) {
 export function buildCandidates(bot, state, plan) {
   const candidates = [];
   const add = (key, description, run) => candidates.push({key, description, run});
+
+  // Explicit user task: build a simple 5x5 starter house one block at a time.
+  if (state.userDirective?.type === 'build_house') {
+    const directive = state.userDirective;
+    const material = directive.material || 'dirt';
+    const status = getHouseStatus(bot, directive);
+    const have = itemCount(state, material);
+
+    if (!status.completed && have > 0) {
+      const next = status.remainingPositions[0];
+      add(
+        'build_house_step',
+        `Build the user's requested 5x5 house: place one ${material} block at ${next}. Progress ${status.placed}/${status.total}; ${status.remaining} blocks remain.`,
+        () => placeAt(bot, next, material)
+      );
+    }
+  }
 
   // Immediate collectible drops.
   for (const entity of Object.values(bot.entities)
