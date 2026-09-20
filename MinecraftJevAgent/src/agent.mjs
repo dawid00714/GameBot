@@ -80,11 +80,17 @@ bot.on('error', error => {
   log('minecraft_error', {error: error.message, code: error.code, errno: error.errno, syscall: error.syscall});
 });
 bot.on('kicked', reason => {
-  console.error('Minecraft kicked the bot:', reason);
+  console.error('\n[MINECRAFT] Bot wurde vom Server gekickt.');
+  console.error('[MINECRAFT] Vollstaendiger Kick-Grund:');
+  console.dir(reason, {depth: null, colors: true});
+  try {
+    console.error('[MINECRAFT] Kick JSON:\n' + JSON.stringify(reason, null, 2));
+  } catch {}
   log('kicked', {reason});
   stopped = true;
 });
 bot.on('end', reason => {
+  console.error('[MINECRAFT] Verbindung beendet:', reason);
   log('end', {reason});
   stopped = true;
 });
@@ -194,7 +200,9 @@ async function main() {
     try {
       result = await decision.candidate.run();
     } catch (error) {
-      result = 'FAILED: ' + error.message;
+      result = stopped
+        ? 'FAILED: Minecraft connection ended while action was running.'
+        : 'FAILED: ' + error.message;
     }
 
     step += 1;
