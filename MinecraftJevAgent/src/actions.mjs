@@ -128,18 +128,37 @@ export function buildCandidates(bot, state, plan) {
     );
   }
 
-  // Visible human players are explicit navigation targets. This lets the planner
-  // say "move toward the player" without inventing a waypoint.
+  // Visible human players are explicit navigation targets. Move only a short,
+  // bounded segment toward them per decision. This avoids one long dynamic
+  // path to a moving entity and keeps movement similar to the already-tested
+  // short exploration actions.
   for (const player of (state.nearbyPlayers || []).slice(0, 2)) {
     if (player.distance <= 2.5) continue;
     add(
       'follow_player_' + player.username,
-      `Move toward visible player ${player.username}; current distance ${player.distance} blocks.`,
+      `Move a short step toward visible player ${player.username}; current distance ${player.distance} blocks.`,
       async () => {
         const live = bot.players?.[player.username]?.entity;
         if (!live?.position) throw new Error('Player is no longer visible: ' + player.username);
-        await goNear(bot, live.position, 2);
-        return 'Moved near player ' + player.username;
+
+        const p = bot.entity.position;
+        const dx = live.position.x - p.x;
+        const dz = live.position.z - p.z;
+        const horizontal = Math.hypot(dx, dz);
+
+        if (horizontal <= 2.5) return 'Already near player ' + player.username;
+
+        const maxStep = 4;
+        const scale = Math.min(1, maxStep / horizontal);
+        const dy = Math.max(-1, Math.min(1, live.position.y - p.y));
+        const target = new Vec3(
+          Math.round(p.x + dx * scale),
+          Math.round(p.y + dy),
+          Math.round(p.z + dz * scale)
+        );
+
+        await goNear(bot, target, 1);
+        return `Moved one safe segment toward player ${player.username}; target ${target}.`;
       }
     );
   }
