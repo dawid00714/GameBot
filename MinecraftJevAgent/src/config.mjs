@@ -17,9 +17,9 @@ export const config = {
     model: process.env.OLLAMA_MODEL || 'qwen3:8b'
   },
   jev: {
-    baseUrl: (process.env.JEV_BASE_URL || 'https://openrouter.ai').replace(/\/$/, ''),
-    path: process.env.JEV_PATH || '/api/alpha/decisions',
-    model: process.env.JEV_MODEL || 'typesafe/jev-1.13',
+    baseUrl: (process.env.JEV_BASE_URL || 'https://api.typesafe.ai').replace(/\/$/, ''),
+    path: process.env.JEV_PATH || '/v1/systemone',
+    model: process.env.JEV_MODEL || 'jev-latest',
     apiKey: process.env.JEV_API_KEY || ''
   },
   plannerEvery: int('PLANNER_EVERY_N_ACTIONS', 12),
