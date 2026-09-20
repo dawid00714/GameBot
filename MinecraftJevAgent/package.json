@@ -1,6 +1,6 @@
 {
   "name": "minecraft-jev-ollama-agent",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -9,7 +9,8 @@
   "scripts": {
     "start": "node src/agent.mjs",
     "check:minecraft": "node src/check-minecraft.mjs",
-    "check:jev": "node src/check-jev.mjs"
+    "check:jev": "node src/check-jev.mjs",
+    "benchmark:ollama": "node src/benchmark-ollama.mjs"
   },
   "dependencies": {
     "dotenv": "^16.4.7",
