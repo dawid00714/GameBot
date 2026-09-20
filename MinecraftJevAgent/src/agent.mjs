@@ -74,6 +74,71 @@ function sanitizePlanAgainstState(nextPlan, currentState) {
   return {plan:sanitized, completed};
 }
 
+function actionAdvancesPlan(actionKey, currentPlan) {
+  const key = String(actionKey || '');
+  const objective = String(currentPlan?.objective || '').toLowerCase();
+  const targets = Object.keys(currentPlan?.targets || {});
+  const desired = currentPlan?.desiredBlocks || [];
+  const resources = [...new Set([...targets, ...desired])];
+
+  if (key === 'wait') return false;
+
+  if (key.startsWith('mine_')) {
+    return resources.some(name => key.startsWith('mine_' + name + '_'));
+  }
+
+  if (key.startsWith('craft_')) {
+    return targets.some(name => key === 'craft_' + name);
+  }
+
+  if (key === 'place_crafting_table') {
+    return targets.includes('crafting_table')
+      || objective.includes('crafting table')
+      || objective.includes('crafting_table');
+  }
+
+  if (key.startsWith('follow_player_')) {
+    return /\b(player|follow|approach|meet|nearby player)\b/.test(objective)
+      && !/loot\s+(the\s+)?player/.test(objective);
+  }
+
+  if (key === 'waypoint') return Boolean(currentPlan?.waypoint);
+
+  if (key.startsWith('loot_')) {
+    return /\b(loot|chest|barrel|container)\b/.test(objective)
+      && !/loot\s+(the\s+)?player/.test(objective);
+  }
+
+  if (key.startsWith('explore_')) {
+    return /\b(explore|search|find|scout|observe|reveal|survey|look for)\b/.test(objective);
+  }
+
+  if (key.startsWith('collect_')) {
+    return /\b(collect|gather|pick up|pickup)\b/.test(objective);
+  }
+
+  return false;
+}
+
+function assessPlan(planCandidate, actionCandidates) {
+  const objective = String(planCandidate?.objective || '').toLowerCase();
+  const impossiblePlayerLoot = /loot\s+(the\s+)?(nearby\s+)?player/.test(objective);
+
+  const relevantActions = actionCandidates
+    .filter(action => actionAdvancesPlan(action.key, planCandidate))
+    .map(action => action.key);
+
+  const feasible = !impossiblePlayerLoot && relevantActions.length > 0;
+
+  return {
+    feasible,
+    invalidReason: impossiblePlayerLoot
+      ? 'Players cannot be looted.'
+      : (relevantActions.length ? null : 'No currently executable action advances this plan.'),
+    relevantActions
+  };
+}
+
 function planForConsole(candidate, index) {
   return {
     option: 'p' + index,
@@ -81,7 +146,9 @@ function planForConsole(candidate, index) {
     targets: candidate.plan.targets,
     waypoint: candidate.plan.waypoint,
     desiredBlocks: candidate.plan.desiredBlocks,
-    usefulActions: candidate.usefulActionCount,
+    feasible: candidate.feasible,
+    invalidReason: candidate.invalidReason,
+    relevantActions: candidate.relevantActions,
     availableActions: candidate.availableActions
   };
 }
@@ -119,13 +186,18 @@ async function refreshPlan() {
     const checked = sanitizePlanAgainstState(rawPlan, plannerState);
     const actionCandidates = buildCandidates(bot, plannerState, checked.plan);
     const availableActions = actionCandidates.map(action => action.key);
+    const assessment = assessPlan(checked.plan, actionCandidates);
     return {
       index,
       original: rawPlan,
       plan: checked.plan,
       completed: checked.completed,
       availableActions,
-      usefulActionCount: availableActions.filter(key => key !== 'wait').length
+      usefulActionCount: availableActions.filter(key => key !== 'wait').length,
+      feasible: assessment.feasible,
+      invalidReason: assessment.invalidReason,
+      relevantActions: assessment.relevantActions,
+      relevantActionCount: assessment.relevantActions.length
     };
   });
 
@@ -135,18 +207,50 @@ async function refreshPlan() {
     console.log(JSON.stringify(planForConsole(candidate, index), null, 2));
   });
 
-  console.log(`[JEV] Waehle High-Level-Plan aus ${candidates.length} Kandidaten...`);
+  let feasibleCandidates = candidates.filter(candidate => candidate.feasible);
+
+  if (!feasibleCandidates.length) {
+    console.warn('[PLAN-GUARD] Ollama hat keinen sofort ausfuehrbaren Plan geliefert. Erzeuge sicheren Fallback.');
+
+    const neutralPlan = {
+      id: 'fallback',
+      objective: (plannerState.nearbyPlayers || []).length
+        ? 'Approach the visible nearby player.'
+        : 'Explore nearby terrain safely to gather new observations.',
+      targets: {},
+      waypoint: null,
+      desiredBlocks: [],
+      notes: 'Deterministic fallback because all Ollama plans were infeasible.'
+    };
+
+    const fallbackActions = buildCandidates(bot, plannerState, neutralPlan);
+    const assessment = assessPlan(neutralPlan, fallbackActions);
+    feasibleCandidates = [{
+      index: -1,
+      original: neutralPlan,
+      plan: neutralPlan,
+      completed: [],
+      availableActions: fallbackActions.map(a => a.key),
+      usefulActionCount: fallbackActions.filter(a => a.key !== 'wait').length,
+      feasible: assessment.feasible,
+      invalidReason: assessment.invalidReason,
+      relevantActions: assessment.relevantActions,
+      relevantActionCount: assessment.relevantActions.length
+    }];
+  }
+
+  console.log(`[JEV] Waehle High-Level-Plan aus ${feasibleCandidates.length} AUSFUEHRBAREN Kandidaten...`);
 
   let planDecision;
   try {
-    planDecision = await choosePlan(plannerState, candidates);
+    planDecision = await choosePlan(plannerState, feasibleCandidates);
   } catch (error) {
     // Keep the bot alive if the plan-level JEV request fails.
     console.error('[JEV] Plan-Auswahl fehlgeschlagen:', error.message);
-    console.error('[JEV] Fallback auf den ersten Ollama-Kandidaten.');
+    console.error('[JEV] Fallback auf den ersten ausfuehrbaren Kandidaten.');
     log('plan_choice_error', {error:error.message});
     planDecision = {
-      candidate:candidates[0],
+      candidate:feasibleCandidates[0],
       choice:'fallback-p0',
       confidence:null,
       probabilities:null,
@@ -241,7 +345,18 @@ async function main() {
       }
     }
 
-    const candidates = buildCandidates(bot, state, plan);
+    const allCandidates = buildCandidates(bot, state, plan);
+    const relevantCandidates = allCandidates.filter(candidate => actionAdvancesPlan(candidate.key, plan));
+
+    // If there is a concrete action that advances the chosen plan, do not offer
+    // unrelated exploration or "wait" to JEV. This prevents wait-loops.
+    const candidates = relevantCandidates.length ? relevantCandidates : allCandidates;
+
+    if (relevantCandidates.length) {
+      console.log('[PLAN-GUARD] Aktionsauswahl auf planrelevante Aktionen begrenzt:', relevantCandidates.map(c => c.key));
+    } else {
+      console.warn('[PLAN-GUARD] Keine planrelevante Aktion vorhanden; voller Fallback-Aktionssatz wird verwendet.');
+    }
 
     let decision;
     try {
