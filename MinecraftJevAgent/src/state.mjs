@@ -68,6 +68,7 @@ export function observe(bot, {plan=null, recent=[], step=0}={}) {
     position: position(bot.entity?.position),
     dimension: bot.game?.dimension,
     difficulty: bot.game?.difficulty,
+    gameMode: bot.game?.gameMode ?? bot.player?.gamemode ?? null,
     health: bot.health,
     food: bot.food,
     timeOfDay: bot.time?.timeOfDay,
