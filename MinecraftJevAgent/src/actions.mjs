@@ -188,11 +188,15 @@ export function buildCandidates(bot, state, plan) {
     );
   }
 
-  // Visible human players are explicit navigation targets. Move only a short,
-  // bounded segment toward them per decision. This avoids one long dynamic
-  // path to a moving entity and keeps movement similar to the already-tested
-  // short exploration actions.
-  for (const player of (state.nearbyPlayers || []).slice(0, 2)) {
+  // Following a human player is NEVER an autonomous action. It is exposed only
+  // after an explicit in-game command such as "folge mir" or "komm her".
+  const requestedPlayer = ['follow_player', 'come_here'].includes(state.userDirective?.type)
+    ? state.userDirective.username
+    : null;
+
+  for (const player of (state.nearbyPlayers || [])
+    .filter(player => requestedPlayer && player.username === requestedPlayer)
+    .slice(0, 1)) {
     if (player.distance <= 2.5) continue;
     add(
       'follow_player_' + player.username,
