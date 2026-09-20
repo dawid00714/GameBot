@@ -227,3 +227,38 @@ export async function runPlanCandidates(state, overrides={}) {
 export async function makePlanCandidates(state, overrides={}) {
   return (await runPlanCandidates(state, overrides)).plans;
 }
+
+
+export async function answerPlayerChat(message, context, overrides={}) {
+  const model = overrides.model || config.ollama.model;
+  const timeoutMs = Number(overrides.timeoutMs ?? config.ollama.timeoutMs);
+  const think = overrides.think ?? false;
+
+  const system = `You are JevOllama, a Minecraft agent speaking to a player in the in-game chat.
+Answer the player's message conversationally and briefly in the same language as the player.
+Use ONLY the supplied context. Do not invent blocks, coordinates, completed tasks, or abilities.
+If asked about the house, distinguish between a doorway opening and a physical door item.
+Do not turn questions into movement commands. Commands are handled separately by code.
+Keep the answer under 180 characters if possible.`;
+
+  const response = await fetch(config.ollama.url + '/api/chat', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      model,
+      stream: false,
+      think,
+      keep_alive: '5m',
+      messages: [
+        {role:'system', content:system},
+        {role:'user', content: JSON.stringify({message, context})}
+      ],
+      options: {temperature:0.2}
+    }),
+    signal: AbortSignal.timeout(timeoutMs)
+  });
+
+  if (!response.ok) throw new Error(`Ollama chat HTTP ${response.status}: ${await response.text()}`);
+  const data = await response.json();
+  return String(data?.message?.content || '').trim();
+}
