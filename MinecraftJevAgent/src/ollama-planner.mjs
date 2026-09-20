@@ -8,11 +8,29 @@ export function parseJson(text) {
   return JSON.parse(cleaned);
 }
 
+function normalizeMinecraftName(name) {
+  return String(name || '')
+    .trim()
+    .replace(/^minecraft:/i, '')
+    .replace(/^minecraft_/i, '');
+}
+
+function normalizeTargets(targets) {
+  if (!targets || typeof targets !== 'object' || Array.isArray(targets)) return {};
+  const out = {};
+  for (const [rawName, value] of Object.entries(targets)) {
+    const name = normalizeMinecraftName(rawName);
+    if (!name) continue;
+    out[name] = value;
+  }
+  return out;
+}
+
 export function normalizePlan(plan, fallbackId=null) {
   return {
     ...(fallbackId != null ? {id: String(plan?.id || fallbackId)} : {}),
     objective: String(plan?.objective || 'Observe the world and make safe progress.'),
-    targets: plan?.targets && typeof plan.targets === 'object' ? plan.targets : {},
+    targets: normalizeTargets(plan?.targets),
     waypoint: plan?.waypoint && Number.isFinite(Number(plan.waypoint.x))
       ? {
           x: Number(plan.waypoint.x),
@@ -21,7 +39,7 @@ export function normalizePlan(plan, fallbackId=null) {
         }
       : null,
     desiredBlocks: Array.isArray(plan?.desiredBlocks)
-      ? plan.desiredBlocks.map(String).slice(0, 12)
+      ? [...new Set(plan.desiredBlocks.map(normalizeMinecraftName).filter(Boolean))].slice(0, 12)
       : [],
     notes: String(plan?.notes || '')
   };
@@ -32,7 +50,8 @@ Rules:
 - Use only information present in the supplied state.
 - Keep the objective achievable with the CURRENT agent capabilities listed below.
 - Prefer small, immediate milestones.
-- Item and block names should use Minecraft registry-style names such as oak_log, cobblestone, crafting_table.
+- Item and block names MUST use Mineflayer's un-namespaced registry names such as dirt, oak_log, cobblestone, crafting_table.
+- NEVER write minecraft_dirt or minecraft:dirt. Use dirt. NEVER write minecraft_crafting_table or minecraft:crafting_table. Use crafting_table.
 - If coordinates are unknown, waypoint must be null.
 - Do not claim that an unknown structure, chest, portal, mob or resource exists.
 - Survival and avoiding obvious hazards have priority over speed.
@@ -41,6 +60,7 @@ Rules:
 - Do not keep collecting a resource after the numeric target is already satisfied.
 - Inventory counts in state are authoritative. If inventory already meets a target, choose a DIFFERENT objective.
 - If a visible player appears in nearbyPlayers, you may choose an objective to approach/follow that player without providing a waypoint.
+- Players cannot be looted. "Loot" is valid only for an observed chest or barrel. Never propose "loot the player".
 - Recent actions and results are authoritative. Do not repeat an objective that is clearly stuck or already completed.
 
 CURRENT AGENT CAPABILITIES:
@@ -109,7 +129,9 @@ Candidate diversity requirements:
 - Produce exactly 3 candidates.
 - The three objectives must be materially different, not paraphrases.
 - Prefer one progression/resource candidate when useful, one navigation/observation candidate when useful, and one prerequisite/safety/crafting candidate when useful.
-- Every candidate must be executable from the supplied state with the listed agent capabilities.
+- Every candidate must be executable NOW from the supplied state with the listed agent capabilities.
+- A crafting objective MUST include the exact craftable target item in targets. Do not say "craft a tool" with targets {}.
+- A mining/resource objective MUST name the exact observed resource in targets and/or desiredBlocks.
 - If a category is not useful, replace it with another genuinely distinct feasible objective.
 - Never include an already-satisfied numeric target merely to create variety.
 ${sharedRules}`;
