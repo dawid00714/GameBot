@@ -60,6 +60,7 @@ function directiveSummary() {
   if (userDirective.type === 'follow_player') return 'Ich folge ' + userDirective.username + '.';
   if (userDirective.type === 'come_here') return 'Ich komme zu ' + userDirective.username + '.';
   if (userDirective.type === 'build_house') return 'Ich baue ein 5x5-Haus fuer ' + userDirective.requestedBy + '.';
+  if (userDirective.type === 'install_door') return 'Ich baue ' + userDirective.doorItem + ' in das letzte Haus ein.';
   return 'Aktive Aufgabe: ' + userDirective.type;
 }
 
@@ -80,7 +81,7 @@ async function onUserChat(username, message) {
   const lower = command.toLowerCase();
 
   if (matches(lower, [/^(hilfe|help|befehle)$/])) {
-    sayStatus('Befehle: "folge mir", "komm her", "baue hier ein haus", "stopp", "weiter", "autonom", "status". Fragen kannst du mir auch stellen.', true);
+    sayStatus('Befehle: "folge mir", "komm her", "baue hier ein haus", "baue eine tuer ein", "stopp", "weiter", "autonom", "status". Fragen kannst du mir auch stellen.', true);
     return;
   }
 
@@ -98,6 +99,19 @@ async function onUserChat(username, message) {
     } else {
       sayStatus(`Die Tueroeffnung ist an der Nordseite bei x=${door.lower.x}, y=${door.lower.y}, z=${door.lower.z}. Es ist aktuell nur eine Oeffnung, keine echte Tuer.`, true);
     }
+    return;
+  }
+
+  if (matches(lower, [/(inventar|inventory).*(tuer|tür|door)/, /(tuer|tür|door).*(inventar|inventory)/])) {
+    const doors = bot.inventory.items()
+      .filter(i => i.name.endsWith('_door') && !i.name.endsWith('_trapdoor'))
+      .map(i => i.name + ' x' + i.count);
+    sayStatus(
+      doors.length
+        ? 'Ja. Im Inventar habe ich: ' + doors.join(', ') + '.'
+        : 'Nein. Ich sehe aktuell keine normale Tuer in meinem Bot-Inventar.',
+      true
+    );
     return;
   }
 
@@ -147,6 +161,36 @@ async function onUserChat(username, message) {
     pausedByUser = false;
     replanRequested = true;
     sayStatus('Okay, ich komme einmal zu dir.', true);
+    return;
+  }
+
+  if (matches(lower, [
+    /(baue|bau|setz|setze|installier|installiere).*(tuer|tür|door)/,
+    /(tuer|tür|door).*(einbauen|einbauen|einsetzen|installieren|setzen|bauen)/
+  ])) {
+    const houseRef = lastBuiltHouse;
+    if (!houseRef?.anchor) {
+      sayStatus('Ich habe kein gebautes Haus gespeichert, in das ich eine Tuer einbauen kann.', true);
+      return;
+    }
+
+    const door = bot.inventory.items().find(i => i.name.endsWith('_door') && !i.name.endsWith('_trapdoor'));
+    if (!door) {
+      sayStatus('Ich sehe keine normale Tuer in meinem Inventar. Ich veraendere die Wand nicht, bis eine Tuer vorhanden ist.', true);
+      return;
+    }
+
+    userDirective = {
+      type: 'install_door',
+      requestedBy: username,
+      anchor: {...houseRef.anchor},
+      material: houseRef.material || null,
+      doorItem: door.name,
+      createdAt: Date.now()
+    };
+    pausedByUser = false;
+    replanRequested = true;
+    sayStatus('Okay. Ich baue ' + door.name + ' in die gespeicherte Tueroeffnung ein.', true);
     return;
   }
 
@@ -261,6 +305,10 @@ function actionAdvancesPlan(actionKey, currentPlan) {
 
   if (key === 'build_house_step') {
     return /\b(build|house|haus|building)\b/.test(objective);
+  }
+
+  if (key === 'install_house_door') {
+    return /\b(door|tuer|tür|install|einbau|einbauen)\b/.test(objective);
   }
 
   if (key.startsWith('mine_')) {
@@ -381,6 +429,23 @@ async function refreshPlan() {
         : 'Explicit user command. Stay near the requested player until cancelled.'
     };
     console.log('\n[USER TASK] ' + (oneShot ? 'Come here:' : 'Follow player:'), userDirective.username);
+    if (lastSpokenPlan !== plan.objective) {
+      lastSpokenPlan = plan.objective;
+      sayStatus('Plan: ' + plan.objective, true);
+    }
+    return;
+  }
+
+  if (userDirective?.type === 'install_door') {
+    plan = {
+      id: 'user-install-door',
+      objective: 'Install the carried ' + userDirective.doorItem + ' in the remembered house doorway',
+      targets: {},
+      waypoint: null,
+      desiredBlocks: [],
+      notes: 'Explicit user command. Modify only the two doorway blocks and place the door.'
+    };
+    console.log('\n[USER TASK] Install door:', JSON.stringify(userDirective, null, 2));
     if (lastSpokenPlan !== plan.objective) {
       lastSpokenPlan = plan.objective;
       sayStatus('Plan: ' + plan.objective, true);
@@ -622,7 +687,7 @@ async function main() {
       }
     }
 
-    if (repeatedSameAction(recent, 5) && !['follow_player', 'come_here'].includes(userDirective?.type)) {
+    if (repeatedSameAction(recent, 5) && !['follow_player', 'come_here', 'install_door'].includes(userDirective?.type)) {
       console.log('[PLAN] Gleiche Aktion 5x hintereinander. Neue 3-Wege-Planung...');
       try {
         await refreshPlan();
@@ -697,6 +762,23 @@ async function main() {
     recent = recent.slice(-12);
     log('result', row);
     console.log('RESULT:', result);
+
+    if (userDirective?.type === 'install_door' && decision.candidate.key === 'install_house_door') {
+      if (String(result).startsWith('Installed ') || String(result).includes('already installed')) {
+        lastBuiltHouse = {
+          ...(lastBuiltHouse || {}),
+          anchor: {...userDirective.anchor},
+          material: userDirective.material || lastBuiltHouse?.material || null,
+          doorItem: userDirective.doorItem
+        };
+        sayStatus('Tuer eingebaut: ' + userDirective.doorItem + '.', true);
+        userDirective = null;
+        replanRequested = true;
+      } else if (String(result).startsWith('FAILED:')) {
+        sayStatus('Tuereinbau fehlgeschlagen: ' + String(result).replace(/^FAILED:\s*/, ''), true);
+        pausedByUser = true;
+      }
+    }
 
     if (userDirective?.type === 'come_here') {
       const after = observe(bot, {plan, recent, step, userDirective});
