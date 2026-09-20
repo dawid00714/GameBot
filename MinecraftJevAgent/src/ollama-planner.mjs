@@ -62,6 +62,7 @@ Rules:
 - If a visible player appears in nearbyPlayers, you may choose an objective to approach/follow that player without providing a waypoint.
 - Players cannot be looted. "Loot" is valid only for an observed chest or barrel. Never propose "loot the player".
 - Recent actions and results are authoritative. Do not repeat an objective that is clearly stuck or already completed.
+- If userDirective is present, it has priority over autonomous goals. Plans must directly advance the user's requested task.
 
 CURRENT AGENT CAPABILITIES:
 - approach/follow a visible player from nearbyPlayers
@@ -73,7 +74,8 @@ CURRENT AGENT CAPABILITIES:
 - craft an item when a valid recipe is currently available
 - place a carried crafting table
 - wait briefly for new observations
-No general building, combat strategy, farming, smelting workflow, portal construction, or arbitrary block placement is available yet.
+- execute the explicit build_house user task using the dedicated one-block-at-a-time house builder
+No general free-form building, combat strategy, farming, smelting workflow, portal construction, or arbitrary block placement is available yet.
 `;
 
 export const plannerSystemPrompt = `You are the high-level planner for a Minecraft Mineflayer agent.
