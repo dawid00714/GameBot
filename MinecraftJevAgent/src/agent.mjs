@@ -56,6 +56,7 @@ function sayStatus(text, force=false) {
 function directiveSummary() {
   if (!userDirective) return 'Autonomer Modus.';
   if (userDirective.type === 'follow_player') return 'Ich folge ' + userDirective.username + '.';
+  if (userDirective.type === 'come_here') return 'Ich komme zu ' + userDirective.username + '.';
   if (userDirective.type === 'build_house') return 'Ich baue ein 5x5-Haus fuer ' + userDirective.requestedBy + '.';
   return 'Aktive Aufgabe: ' + userDirective.type;
 }
@@ -110,7 +111,7 @@ function onUserChat(username, message) {
     return;
   }
 
-  if (matches(lower, [/^(folge mir|follow me|komm her|come here)$/])) {
+  if (matches(lower, [/^(folge mir|follow me)$/])) {
     userDirective = {
       type: 'follow_player',
       username,
@@ -119,7 +120,20 @@ function onUserChat(username, message) {
     };
     pausedByUser = false;
     replanRequested = true;
-    sayStatus('Okay, ich folge dir.', true);
+    sayStatus('Okay, ich folge dir, bis du "stopp" oder "autonom" schreibst.', true);
+    return;
+  }
+
+  if (matches(lower, [/^(komm her|come here)$/])) {
+    userDirective = {
+      type: 'come_here',
+      username,
+      requestedBy: username,
+      createdAt: Date.now()
+    };
+    pausedByUser = false;
+    replanRequested = true;
+    sayStatus('Okay, ich komme einmal zu dir.', true);
     return;
   }
 
@@ -285,16 +299,28 @@ bot.on('death', () => {
 async function refreshPlan() {
   const plannerState = observe(bot, {plan, recent, step, userDirective});
 
-  if (userDirective?.type === 'follow_player') {
+  if (['follow_player', 'come_here'].includes(userDirective?.type)) {
+    const oneShot = userDirective.type === 'come_here';
+    const visible = (plannerState.nearbyPlayers || []).find(p => p.username === userDirective.username);
+
+    if (oneShot && visible && visible.distance <= 2.5) {
+      sayStatus('Ich bin da.', true);
+      userDirective = null;
+      replanRequested = true;
+      return refreshPlan();
+    }
+
     plan = {
-      id: 'user-follow',
-      objective: 'Follow the visible player ' + userDirective.username,
+      id: oneShot ? 'user-come-here' : 'user-follow',
+      objective: (oneShot ? 'Approach the player ' : 'Follow the player ') + userDirective.username,
       targets: {},
       waypoint: null,
       desiredBlocks: [],
-      notes: 'Explicit user command. Stay near the requested player.'
+      notes: oneShot
+        ? 'Explicit user command. Approach once, then finish when within 2.5 blocks.'
+        : 'Explicit user command. Stay near the requested player until cancelled.'
     };
-    console.log('\n[USER TASK] Follow player:', userDirective.username);
+    console.log('\n[USER TASK] ' + (oneShot ? 'Come here:' : 'Follow player:'), userDirective.username);
     if (lastSpokenPlan !== plan.objective) {
       lastSpokenPlan = plan.objective;
       sayStatus('Plan: ' + plan.objective, true);
@@ -391,13 +417,11 @@ async function refreshPlan() {
 
     const neutralPlan = {
       id: 'fallback',
-      objective: (plannerState.nearbyPlayers || []).length
-        ? 'Approach the visible nearby player.'
-        : 'Explore nearby terrain safely to gather new observations.',
+      objective: 'Explore nearby terrain safely to gather new observations.',
       targets: {},
       waypoint: null,
       desiredBlocks: [],
-      notes: 'Deterministic fallback because all Ollama plans were infeasible.'
+      notes: 'Deterministic autonomous fallback. Do not follow visible players without an explicit user command.'
     };
 
     const fallbackActions = buildCandidates(bot, plannerState, neutralPlan);
@@ -533,7 +557,7 @@ async function main() {
       }
     }
 
-    if (repeatedSameAction(recent, 5) && userDirective?.type !== 'follow_player') {
+    if (repeatedSameAction(recent, 5) && !['follow_player', 'come_here'].includes(userDirective?.type)) {
       console.log('[PLAN] Gleiche Aktion 5x hintereinander. Neue 3-Wege-Planung...');
       try {
         await refreshPlan();
@@ -608,6 +632,16 @@ async function main() {
     recent = recent.slice(-12);
     log('result', row);
     console.log('RESULT:', result);
+
+    if (userDirective?.type === 'come_here') {
+      const after = observe(bot, {plan, recent, step, userDirective});
+      const targetPlayer = (after.nearbyPlayers || []).find(p => p.username === userDirective.username);
+      if (targetPlayer && targetPlayer.distance <= 2.5) {
+        sayStatus('Ich bin da.', true);
+        userDirective = null;
+        replanRequested = true;
+      }
+    }
 
     if (userDirective?.type === 'build_house') {
       const house = getHouseStatus(bot, userDirective);
