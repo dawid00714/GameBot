@@ -59,7 +59,7 @@ Rules:
 - Never request "build a structure", house, tower, shelter, bridge or arbitrary construction: the current agent does not yet have general block-placement actions.
 - Do not keep collecting a resource after the numeric target is already satisfied.
 - Inventory counts in state are authoritative. If inventory already meets a target, choose a DIFFERENT objective.
-- If a visible player appears in nearbyPlayers, you may choose an objective to approach/follow that player without providing a waypoint.
+- Visible players in nearbyPlayers are context only. NEVER choose an objective to approach, follow, meet, or track a player unless userDirective explicitly requests it.
 - Players cannot be looted. "Loot" is valid only for an observed chest or barrel. Never propose "loot the player".
 - Recent actions and results are authoritative. Do not repeat an objective that is clearly stuck or already completed.
 - If userDirective is present, it has priority over autonomous goals. Plans must directly advance the user's requested task.
