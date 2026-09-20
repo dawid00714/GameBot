@@ -62,6 +62,19 @@ function nearbyEntities(bot) {
     .slice(0, 20);
 }
 
+function nearbyPlayers(bot) {
+  if (!bot.entity) return [];
+  return Object.values(bot.players || {})
+    .filter(player => player?.username && player.username !== bot.username && player.entity?.position)
+    .map(player => ({
+      username: player.username,
+      position: position(player.entity.position),
+      distance: Number(bot.entity.position.distanceTo(player.entity.position).toFixed(1))
+    }))
+    .sort((a,b) => a.distance - b.distance)
+    .slice(0, 8);
+}
+
 export function observe(bot, {plan=null, recent=[], step=0}={}) {
   return {
     step,
@@ -76,6 +89,7 @@ export function observe(bot, {plan=null, recent=[], step=0}={}) {
     inventory: inventory(bot),
     nearbyBlocks: nearbyBlocks(bot),
     nearbyEntities: nearbyEntities(bot),
+    nearbyPlayers: nearbyPlayers(bot),
     planner: plan,
     recent: recent.slice(-8)
   };
