@@ -5,3 +5,4 @@ opencv-python>=4.10
 mss>=9.0
 pywin32>=306
 Pillow>=10.4
+typesafe-sdk>=0.6.0
