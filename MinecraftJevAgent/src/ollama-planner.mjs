@@ -262,3 +262,67 @@ Keep the answer under 180 characters if possible.`;
   const data = await response.json();
   return String(data?.message?.content || '').trim();
 }
+
+
+export async function interpretPlayerMessage(message, context, overrides={}) {
+  const system = `You are the command interpreter for a Minecraft agent.
+The player speaks naturally. YOU decide whether the message is a command, a question, or ordinary conversation.
+
+Return ONLY valid JSON with this exact shape:
+{
+  "kind": "command" | "question" | "conversation",
+  "action": "build_house" | "install_door" | "follow_player" | "come_here" | "pause" | "resume" | "autonomous" | "status" | "help" | "none",
+  "arguments": {
+    "material": "wood" | "dirt" | "cobblestone" | "auto" | null,
+    "doorItem": "minecraft_item_name_or_null"
+  },
+  "reply": "short German reply or empty string"
+}
+
+Rules:
+- The player's explicit request has priority.
+- A QUESTION or factual STATEMENT must never become a movement/building/mining command.
+- Only set kind="command" when the player clearly asks the bot to DO something.
+- "baue ein haus aus holz" => command/build_house/material=wood.
+- "baue eine tür ein" => command/install_door.
+- "du hast doch eine tür im inventar" => conversation/none, NOT a command.
+- "hast du eine tür im inventar?" => question/none.
+- "wo ist die tür?" => question/none.
+- "folge mir" => command/follow_player.
+- "komm her" => command/come_here.
+- "stopp" => command/pause.
+- "weiter" => command/resume.
+- "mach wieder selbstständig weiter" => command/autonomous.
+- "was machst du?" => command/status.
+- Do not invent an inventory item. If a requested door is unspecified, doorItem must be null and execution code will select an actually present door.
+- Do not output Minecraft slash commands, JavaScript, prose outside the JSON, or actions not in the allowed action enum.
+- Keep reply short and in the same language as the player.`;
+
+  const result = await chatJson(system, {message, context}, {
+    ...overrides,
+    think: overrides.think ?? false,
+    temperature: overrides.temperature ?? 0.05
+  });
+
+  const raw = result.json || {};
+  const allowedKinds = new Set(['command','question','conversation']);
+  const allowedActions = new Set([
+    'build_house','install_door','follow_player','come_here',
+    'pause','resume','autonomous','status','help','none'
+  ]);
+  const allowedMaterials = new Set(['wood','dirt','cobblestone','auto']);
+
+  return {
+    kind: allowedKinds.has(raw.kind) ? raw.kind : 'conversation',
+    action: allowedActions.has(raw.action) ? raw.action : 'none',
+    arguments: {
+      material: allowedMaterials.has(raw?.arguments?.material) ? raw.arguments.material : null,
+      doorItem: typeof raw?.arguments?.doorItem === 'string' && raw.arguments.doorItem
+        ? raw.arguments.doorItem.replace(/^minecraft:/, '')
+        : null
+    },
+    reply: typeof raw.reply === 'string' ? raw.reply.trim() : '',
+    raw,
+    latencyMs: result.latencyMs
+  };
+}
