@@ -114,7 +114,10 @@ export function houseDoorInfo(directive) {
     lower: {x: a.x + 2, y: a.y, z: a.z},
     upper: {x: a.x + 2, y: a.y + 1, z: a.z},
     side: 'north',
-    hasPhysicalDoor: false,
-    description: 'two-block-high doorway opening centered on the north wall'
+    hasPhysicalDoor: Boolean(directive?.doorItem),
+    doorItem: directive?.doorItem || null,
+    description: directive?.doorItem
+      ? 'physical ' + directive.doorItem + ' installed in the doorway'
+      : 'two-block-high doorway opening centered on the north wall'
   };
 }
