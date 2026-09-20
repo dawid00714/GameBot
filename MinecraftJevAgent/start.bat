@@ -13,17 +13,21 @@ if not exist .env (
 
 where node >nul 2>nul
 if errorlevel 1 (
-  echo [FEHLER] Node.js wurde nicht gefunden.
+  echo [FEHLER] Node.js wurde nicht gefunden. Node.js 22 oder neuer wird benoetigt.
   pause
   exit /b 1
 )
 
-if not exist node_modules (
-  echo Installiere Node-Abhaengigkeiten...
-  call npm install
-  if errorlevel 1 exit /b 1
+echo.
+echo Aktualisiere Abhaengigkeiten fuer Minecraft Java 26.2...
+call npm install
+if errorlevel 1 (
+  echo [FEHLER] npm install ist fehlgeschlagen.
+  pause
+  exit /b 1
 )
 
+echo.
 echo Pruefe Ollama...
 curl -s http://127.0.0.1:11434/api/tags >nul 2>nul
 if errorlevel 1 (
@@ -33,6 +37,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo Starte Minecraft JEV + Ollama Agent...
+echo.
+echo Starte Minecraft JEV + Ollama Agent fuer Minecraft Java 26.2...
 node src/agent.mjs
 pause
