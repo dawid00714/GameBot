@@ -7,6 +7,13 @@ import { choosePlan, chooseAction } from './jev-controller.mjs';
 import { observe } from './state.mjs';
 import { buildCandidates } from './actions.mjs';
 import { createHouseDirective, getHouseStatus, chooseHouseMaterial, houseDoorInfo } from './house.mjs';
+import {
+  applyDreamPolicy,
+  recordDreamTransition,
+  maybeImproveDreamPolicy,
+  getDreamRuntimeConfig,
+  describeDreamPolicy
+} from './dream-rsi.mjs';
 
 const { pathfinder, Movements } = pf;
 
@@ -657,8 +664,11 @@ async function main() {
     minecraft: config.minecraft,
     ollamaModel: config.ollama.model,
     jevModel: config.jev.model,
-    architecture: 'ollama-3-plans -> jev-plan-choice -> jev-action-choice'
+    architecture: 'ollama-chat/plans -> dream-rsi-orchestration -> jev-choice -> mineflayer'
   });
+
+  const dreamStatus = describeDreamPolicy();
+  console.log('[DREAM-RSI] Status:', JSON.stringify(dreamStatus, null, 2));
 
   await refreshPlan();
 
@@ -686,7 +696,9 @@ async function main() {
       }
     }
 
-    if (step > 0 && step % config.plannerEvery === 0) {
+    const dreamRuntime = getDreamRuntimeConfig();
+
+    if (step > 0 && step % dreamRuntime.plannerEvery === 0) {
       try {
         await refreshPlan();
       } catch (error) {
@@ -707,8 +719,8 @@ async function main() {
       }
     }
 
-    if (repeatedSameAction(recent, 5) && !['follow_player', 'come_here', 'install_door'].includes(userDirective?.type)) {
-      console.log('[PLAN] Gleiche Aktion 5x hintereinander. Neue 3-Wege-Planung...');
+    if (repeatedSameAction(recent, dreamRuntime.replanRepeatThreshold) && !['follow_player', 'come_here', 'install_door'].includes(userDirective?.type)) {
+      console.log('[PLAN] Gleiche Aktion ' + dreamRuntime.replanRepeatThreshold + 'x hintereinander. Neue 3-Wege-Planung...');
       try {
         await refreshPlan();
         state = observe(bot, {plan, recent, step, userDirective});
@@ -722,7 +734,20 @@ async function main() {
 
     // If there is a concrete action that advances the chosen plan, do not offer
     // unrelated exploration or "wait" to JEV. This prevents wait-loops.
-    const candidates = relevantCandidates.length ? relevantCandidates : allCandidates;
+    const baseCandidates = relevantCandidates.length ? relevantCandidates : allCandidates;
+    const candidates = applyDreamPolicy(baseCandidates, {
+      state,
+      plan,
+      recent,
+      userDirective
+    });
+
+    if (candidates.length !== baseCandidates.length || candidates.some(c => Number.isFinite(c.dreamPriority))) {
+      console.log('[DREAM-RSI] Aktions-Policy:', candidates.map(c => ({
+        key: c.key,
+        priority: c.dreamPriority ?? null
+      })));
+    }
 
     if (relevantCandidates.length) {
       console.log('[PLAN-GUARD] Aktionsauswahl auf planrelevante Aktionen begrenzt:', relevantCandidates.map(c => c.key));
@@ -767,6 +792,7 @@ async function main() {
         : 'FAILED: ' + error.message;
     }
 
+    const recentBeforeDream = [...recent];
     step += 1;
     const row = {
       step,
@@ -782,6 +808,29 @@ async function main() {
     recent = recent.slice(-12);
     log('result', row);
     console.log('RESULT:', result);
+
+    const dreamAfterState = observe(bot, {plan, recent, step, userDirective});
+    recordDreamTransition({
+      step,
+      beforeState: state,
+      afterState: dreamAfterState,
+      plan,
+      candidates,
+      selectedAction: decision.candidate.key,
+      result,
+      recentBefore: recentBeforeDream
+    });
+
+    const dreamUpdate = await maybeImproveDreamPolicy(step);
+    if (dreamUpdate?.updated) {
+      log('dream_rsi_policy_update', {
+        step,
+        policy: dreamUpdate.policy,
+        selected: dreamUpdate.selected,
+        incumbent: dreamUpdate.incumbent
+      });
+      sayStatus('Dream-RSI hat meine Erkundungsstrategie aus vergangener Erfahrung verbessert.', true);
+    }
 
     if (userDirective?.type === 'install_door' && decision.candidate.key === 'install_house_door') {
       if (String(result).startsWith('Installed ') || String(result).includes('already installed')) {
