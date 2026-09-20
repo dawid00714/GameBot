@@ -3,8 +3,8 @@ import path from 'node:path';
 import mineflayer from 'mineflayer';
 import pf from 'mineflayer-pathfinder';
 import { config } from './config.mjs';
-import { makePlan } from './ollama-planner.mjs';
-import { chooseAction } from './jev-controller.mjs';
+import { makePlanCandidates } from './ollama-planner.mjs';
+import { choosePlan, chooseAction } from './jev-controller.mjs';
 import { observe } from './state.mjs';
 import { buildCandidates } from './actions.mjs';
 
@@ -75,6 +75,18 @@ function sanitizePlanAgainstState(nextPlan, currentState) {
   return {plan:sanitized, completed};
 }
 
+function planForConsole(candidate, index) {
+  return {
+    option: 'p' + index,
+    objective: candidate.plan.objective,
+    targets: candidate.plan.targets,
+    waypoint: candidate.plan.waypoint,
+    desiredBlocks: candidate.plan.desiredBlocks,
+    usefulActions: candidate.usefulActionCount,
+    availableActions: candidate.availableActions
+  };
+}
+
 bot.on('error', error => {
   console.error('Minecraft connection error:', error);
   log('minecraft_error', {error: error.message, code: error.code, errno: error.errno, syscall: error.syscall});
@@ -100,17 +112,69 @@ bot.on('death', () => {
 
 async function refreshPlan() {
   const plannerState = observe(bot, {plan, recent, step});
-  console.log(`\n[OLLAMA] Frage Planer ${config.ollama.model}...`);
-  log('planner_request', {model: config.ollama.model, state: plannerState});
-  const next = await makePlan(plannerState);
-  const checked = sanitizePlanAgainstState(next, plannerState);
-  plan = checked.plan;
-  if (checked.completed.length) {
-    console.log('[PLAN-GUARD] Bereits erreichte Targets entfernt:', checked.completed);
-    log('planner_targets_removed', {completed:checked.completed, original:next, sanitized:plan});
+  console.log(`\n[OLLAMA] Erzeuge 3 Plan-Kandidaten mit ${config.ollama.model}...`);
+  log('planner_candidates_request', {model: config.ollama.model, state: plannerState});
+
+  const rawCandidates = await makePlanCandidates(plannerState);
+  const candidates = rawCandidates.map((rawPlan, index) => {
+    const checked = sanitizePlanAgainstState(rawPlan, plannerState);
+    const actionCandidates = buildCandidates(bot, plannerState, checked.plan);
+    const availableActions = actionCandidates.map(action => action.key);
+    return {
+      index,
+      original: rawPlan,
+      plan: checked.plan,
+      completed: checked.completed,
+      availableActions,
+      usefulActionCount: availableActions.filter(key => key !== 'wait').length
+    };
+  });
+
+  log('planner_candidates_response', {candidates});
+  console.log('\n[OLLAMA] PLAN-KANDIDATEN:');
+  candidates.forEach((candidate, index) => {
+    console.log(JSON.stringify(planForConsole(candidate, index), null, 2));
+  });
+
+  console.log(`[JEV] Waehle High-Level-Plan aus ${candidates.length} Kandidaten...`);
+
+  let planDecision;
+  try {
+    planDecision = await choosePlan(plannerState, candidates);
+  } catch (error) {
+    // Keep the bot alive if the plan-level JEV request fails.
+    console.error('[JEV] Plan-Auswahl fehlgeschlagen:', error.message);
+    console.error('[JEV] Fallback auf den ersten Ollama-Kandidaten.');
+    log('plan_choice_error', {error:error.message});
+    planDecision = {
+      candidate:candidates[0],
+      choice:'fallback-p0',
+      confidence:null,
+      probabilities:null,
+      raw:null,
+      request:null
+    };
   }
-  log('planner_response', {plan});
-  console.log('\nPLAN:', JSON.stringify(plan, null, 2));
+
+  plan = planDecision.candidate.plan;
+
+  if (planDecision.candidate.completed.length) {
+    console.log('[PLAN-GUARD] Bereits erreichte Targets entfernt:', planDecision.candidate.completed);
+  }
+
+  console.log(`\n[JEV] PLAN GEWAEHLT: ${planDecision.choice}`);
+  console.log(JSON.stringify(plan, null, 2));
+
+  log('plan_choice', {
+    selected: planDecision.choice,
+    plan,
+    completed: planDecision.candidate.completed,
+    availableActions: planDecision.candidate.availableActions,
+    confidence: planDecision.confidence,
+    probabilities: planDecision.probabilities,
+    request: planDecision.request,
+    response: planDecision.raw
+  });
 }
 
 async function main() {
@@ -126,7 +190,8 @@ async function main() {
   log('start', {
     minecraft: config.minecraft,
     ollamaModel: config.ollama.model,
-    jevModel: config.jev.model
+    jevModel: config.jev.model,
+    architecture: 'ollama-3-plans -> jev-plan-choice -> jev-action-choice'
   });
 
   await refreshPlan();
@@ -151,18 +216,22 @@ async function main() {
     let state = observe(bot, {plan, recent, step});
 
     if (numericTargetsSatisfied(state, plan)) {
-      console.log('[OLLAMA] Planner targets erreicht. Plane sofort neu...');
-      await refreshPlan();
-      state = observe(bot, {plan, recent, step});
-    }
-
-    if (repeatedSameAction(recent, 5)) {
-      console.log('[OLLAMA] Gleiche Aktion 5x hintereinander. Erzwinge Neuplanung...');
+      console.log('[PLAN] Aktuelle numerische Targets erreicht. Neue 3-Wege-Planung...');
       try {
         await refreshPlan();
         state = observe(bot, {plan, recent, step});
       } catch (error) {
-        console.error('[OLLAMA] Neuplanung fehlgeschlagen:', error.message);
+        console.error('[PLAN] Neuplanung fehlgeschlagen:', error.message);
+      }
+    }
+
+    if (repeatedSameAction(recent, 5)) {
+      console.log('[PLAN] Gleiche Aktion 5x hintereinander. Neue 3-Wege-Planung...');
+      try {
+        await refreshPlan();
+        state = observe(bot, {plan, recent, step});
+      } catch (error) {
+        console.error('[PLAN] Neuplanung fehlgeschlagen:', error.message);
       }
     }
 
@@ -170,14 +239,14 @@ async function main() {
 
     let decision;
     try {
-      console.log(`[JEV] Frage ${config.jev.model} mit ${candidates.length} Aktionen...`);
+      console.log(`[JEV] Waehle Aktion aus ${candidates.length} Aktionen...`);
       decision = await chooseAction(state, candidates);
       consecutiveJevErrors = 0;
     } catch (error) {
       consecutiveJevErrors += 1;
       log('jev_error', {error: error.message, consecutive: consecutiveJevErrors});
       console.error('[JEV] Fehler:', error.message);
-      console.error('[JEV] Bot bleibt verbunden. Neuer Versuch in 10 Sekunden. Bei Konfigurationsaenderungen npm start neu starten.');
+      console.error('[JEV] Bot bleibt verbunden. Neuer Versuch in 10 Sekunden.');
       await new Promise(resolve => setTimeout(resolve, 10000));
       continue;
     }
