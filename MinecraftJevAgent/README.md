@@ -211,3 +211,66 @@ Darum zuerst `npm run check:minecraft` ausfuehren. Wenn der Bot verbindet, aber 
 - `.env` nicht auf GitHub hochladen.
 - Microsoft-Token-Caches nicht committen.
 - `offline`-Authentifizierung nur fuer lokale/private Welten verwenden, fuer die du berechtigt bist.
+
+
+## Alle lokalen Ollama-Modelle benchmarken
+
+Der Benchmark erkennt standardmäßig automatisch **alle lokal installierten Ollama-Modelle** über `/api/tags` und testet sie nacheinander mit mehreren Minecraft-Planer-Aufgaben.
+
+Start:
+
+```powershell
+npm run benchmark:ollama
+```
+
+Gemessen werden unter anderem:
+
+- Zeit bis zum fertigen Plan
+- Ollama Load-Zeit
+- Ausgabe-Tokens pro Sekunde
+- gültige Planner-JSON-Struktur
+- Befolgung von Minecraft-Zielen
+- korrekte Verwendung eines bekannten Waypoints
+- Vermeidung erfundener Waypoints
+- Fehler und Timeouts
+
+Am Ende erscheinen drei relevante Ergebnisse:
+
+```
+BESTE BALANCE
+BESTE QUALITÄT
+SCHNELLSTES
+```
+
+Zusätzlich wird eine vollständige JSON- und CSV-Datei unter `benchmarks/` gespeichert.
+
+Der Standard-Benchmark setzt `think=false`, weil der Minecraft-Planer möglichst schnell reagieren soll. Das ist besonders für Qwen3 wichtig.
+
+Optionen:
+
+```powershell
+# Nur bestimmte Modelle:
+$env:BENCH_MODELS="qwen3:1.7b,qwen3:4b,qwen3:8b"
+npm run benchmark:ollama
+
+# Zwei Durchläufe pro Test:
+$env:BENCH_RUNS="2"
+npm run benchmark:ollama
+
+# 90 Sekunden Timeout je Anfrage:
+$env:BENCH_TIMEOUT_MS="90000"
+npm run benchmark:ollama
+
+# Thinking explizit mitbenchmarken:
+$env:BENCH_THINK="true"
+npm run benchmark:ollama
+```
+
+Für den normalen Agenten kann Thinking separat gesteuert werden:
+
+```env
+OLLAMA_THINK=false
+OLLAMA_TIMEOUT_MS=60000
+```
+
+Für Echtzeit-Minecraft ist `OLLAMA_THINK=false` normalerweise die sinnvollere Einstellung.
