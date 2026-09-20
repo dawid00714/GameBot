@@ -5,6 +5,12 @@ const int = (name, fallback) => {
   return Number.isFinite(value) ? value : fallback;
 };
 
+const bool = (name, fallback=false) => {
+  const value = process.env[name];
+  if (value == null || value === '') return fallback;
+  return ['1','true','yes','on'].includes(String(value).toLowerCase());
+};
+
 const auth = (process.env.MC_AUTH || 'offline').toLowerCase();
 if (!['offline', 'microsoft'].includes(auth)) {
   throw new Error('MC_AUTH must be "offline" or "microsoft".');
@@ -20,7 +26,9 @@ export const config = {
   },
   ollama: {
     url: (process.env.OLLAMA_URL || 'http://127.0.0.1:11434').replace(/\/$/, ''),
-    model: process.env.OLLAMA_MODEL || 'qwen3:8b'
+    model: process.env.OLLAMA_MODEL || 'qwen3:8b',
+    timeoutMs: int('OLLAMA_TIMEOUT_MS', 60000),
+    think: bool('OLLAMA_THINK', false)
   },
   jev: {
     baseUrl: (process.env.JEV_BASE_URL || 'https://api.typesafe.ai').replace(/\/$/, ''),
