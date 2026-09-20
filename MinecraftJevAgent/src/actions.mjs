@@ -1,5 +1,5 @@
 import { Vec3 } from 'vec3';
-import pf from 'mineflayer-pathfinder';
+import { pf } from './minecraft-runtime.mjs';
 import { config } from './config.mjs';
 
 const { goals } = pf;
